@@ -85,6 +85,7 @@ export const Schema = z.object({
       折算合计铜币: z.coerce.number().transform(value => Math.max(0, Math.floor(value))),
     }),
     今日营业状态: z.string(),
+    整体概况: z.string().prefault(''),
     区域: z.record(z.string().describe('区域名'), z.object({
       状态: FacilityState,
       风格: z.string(),

@@ -9,16 +9,17 @@ const selectedRegionId = ref('main-hall');
 const selectedRegion = computed(() => game.regions.find(r => r.id === selectedRegionId.value) ?? game.regions[0]);
 const selectedWorkerId = ref<string | null>(null);
 const selectedWorker = computed(() => game.heroines.find(h => h.id === selectedWorkerId.value) ?? null);
-const floorCells = [
-  { id: 'rooms', label: '客房', className: 'rooms' },
-  { id: 'front-door', label: '前门', className: 'front' },
-  { id: 'main-hall', label: '主厅', className: 'hall' },
-  { id: 'bar', label: '柜台', className: 'bar' },
-  { id: 'kitchen', label: '厨房', className: 'kitchen' },
-  { id: 'cellar', label: '地窖', className: 'cellar' },
-  { id: 'yard', label: '后院', className: 'yard' },
-  { id: 'stable', label: '马厩', className: 'stable' },
-];
+const regionList = computed(() => game.regions);
+const compactRegions = computed(() => regionList.value.length > 12);
+const manyRegions = computed(() => regionList.value.length > 20);
+const tavernOverviewText = computed(() => {
+  const overview = String(game.tavernOverview ?? '').trim();
+  if (overview) return overview;
+  const names = regionList.value.map(region => region.name).slice(0, 6).join('、');
+  return names
+    ? `${game.tavernName}当前已形成 ${regionList.value.length} 处可记录空间：${names}${regionList.value.length > 6 ? '等' : ''}。`
+    : `${game.tavernName}的空间仍等待玩家在正文中整理、命名和拓展。`;
+});
 
 const addOpen = ref(false);
 const addTarget = ref<TavernRegion | null>(null);
@@ -151,9 +152,6 @@ const dirtyCount = computed(() => game.regions.filter(r => needsCleaning(r.condi
 function regionFacilityCount(r: TavernRegion) {
   return r.facilities.length + (r.rooms?.reduce((sum, room) => sum + room.facilities.length, 0) ?? 0);
 }
-function regionById(id: string) {
-  return game.regions.find(r => r.id === id);
-}
 function assignedRegionFor(h: Heroine) {
   return game.regions.find(r => r.staff?.includes(h.name));
 }
@@ -208,7 +206,7 @@ function assignWorkerToRegion(r: TavernRegion) {
       <div>
         <h2 class="h-title">
           <PmIcon name="tavern" :size="22" />
-          {{ game.tavernName }} · 八大区域
+          {{ game.tavernName }} · 成长空间
         </h2>
         <div class="sub">已添置 {{ facilityCount }} 项 · 待清洁 {{ dirtyCount }} 处</div>
       </div>
@@ -249,18 +247,29 @@ function assignWorkerToRegion(r: TavernRegion) {
     </header>
 
     <div class="pm-paper-body tavern-board">
-      <section class="floor-plan" aria-label="酒馆平面图">
+      <section class="region-panel" aria-label="酒馆成长空间">
+        <article class="tavern-overview">
+          <div class="overview-kicker">当前酒馆概况</div>
+          <p>{{ tavernOverviewText }}</p>
+        </article>
+        <div v-if="manyRegions" class="region-overflow-note">
+          空间记录已经很多了，可以在剧情里让角色整理、合并或重新命名区域，但不会阻止继续新增。
+        </div>
+        <div class="region-list" :class="{ compact: compactRegions }">
         <button
-          v-for="cell in floorCells"
-          :key="cell.id"
-          class="floor-room"
-          :class="[cell.className, { active: selectedRegionId === cell.id, worn: regionById(cell.id) ? needsCleaning(regionById(cell.id)!.condition) : false }]"
-          @click="selectedRegionId = cell.id"
+          v-for="region in regionList"
+          :key="region.id"
+          class="region-card"
+          :class="{ active: selectedRegionId === region.id, worn: needsCleaning(region.condition) }"
+          @click="selectedRegionId = region.id"
         >
-          <strong>{{ cell.label }}</strong>
-          <span>{{ regionById(cell.id) ? regionFacilityCount(regionById(cell.id)!) : 0 }}设施</span>
-          <em>{{ regionById(cell.id)?.staff ?? (regionById(cell.id)?.rooms?.length ? `${regionById(cell.id)?.rooms?.length}房间` : '空位') }}</em>
+          <span class="region-card-icon"><PmIcon :name="region.icon" :size="18" /></span>
+          <strong>{{ region.name }}</strong>
+          <span>{{ region.subtitle }}</span>
+          <em>{{ regionFacilityCount(region) }}项设施 · {{ region.staff ?? (region.rooms?.length ? `${region.rooms.length}房间` : region.condition) }}</em>
         </button>
+        </div>
+        <div v-if="regionList.length === 0" class="pm-empty compact">还没有记录到可用空间。</div>
       </section>
 
       <aside v-if="selectedRegion" class="region-detail">
@@ -534,48 +543,80 @@ function assignWorkerToRegion(r: TavernRegion) {
 
 .tavern-board {
   display: grid;
-  grid-template-columns: minmax(420px, 1.25fr) minmax(320px, 0.75fr);
+  grid-template-columns: minmax(360px, 0.95fr) minmax(340px, 1.05fr);
   gap: 14px;
   align-items: start;
 }
-.floor-plan {
+.region-panel {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  grid-template-rows: 86px 116px 104px 86px;
-  gap: 6px;
-  min-height: 420px;
+  gap: 10px;
   padding: 14px;
   border: 2px solid rgba(80, 52, 24, 0.46);
   border-radius: 4px;
   background:
-    linear-gradient(rgba(93, 63, 29, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(93, 63, 29, 0.08) 1px, transparent 1px),
     radial-gradient(circle at 20% 10%, rgba(255, 255, 255, 0.26), transparent 36%),
     linear-gradient(180deg, rgba(255, 245, 215, 0.82), rgba(212, 186, 136, 0.58));
-  background-size: 22px 22px, 22px 22px, auto, auto;
   box-shadow: inset 0 0 0 1px rgba(255, 245, 215, 0.4);
 }
-.floor-room {
+.tavern-overview {
+  padding: 12px;
+  border: 1px solid rgba(110, 80, 34, 0.36);
+  border-radius: 4px;
+  background: rgba(255, 248, 226, 0.5);
+}
+.overview-kicker {
+  margin-bottom: 6px;
+  color: var(--pm-gold);
+  font-size: calc(11px * var(--pm-text-scale));
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.tavern-overview p {
+  margin: 0;
+  color: var(--pm-ink-soft);
+  font-size: calc(13px * var(--pm-text-scale));
+  line-height: 1.8;
+}
+.region-overflow-note {
+  padding: 8px 10px;
+  border: 1px dashed rgba(153, 104, 44, 0.46);
+  border-radius: 4px;
+  background: rgba(255, 236, 180, 0.45);
+  color: var(--pm-ink-dim);
+  font-size: calc(12px * var(--pm-text-scale));
+  line-height: 1.6;
+}
+.region-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 8px;
+}
+.region-list.compact {
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+}
+.region-card {
   position: relative;
   display: grid;
-  align-content: center;
-  justify-items: center;
-  gap: 3px;
+  grid-template-columns: 28px 1fr;
+  grid-template-rows: auto auto auto;
+  align-items: center;
+  gap: 4px 8px;
   min-width: 0;
-  padding: 8px 6px;
-  border: 2px solid rgba(87, 57, 26, 0.54);
+  min-height: 92px;
+  padding: 10px;
+  border: 1px solid rgba(87, 57, 26, 0.54);
   border-radius: 4px;
   background: rgba(255, 248, 226, 0.52);
   color: var(--pm-ink);
-  text-align: center;
+  text-align: left;
   box-shadow: inset 0 1px 0 rgba(255, 245, 215, 0.52);
 }
-.floor-room:hover,
-.floor-room.active {
+.region-card:hover,
+.region-card.active {
   border-color: rgba(130, 84, 31, 0.92);
   background: linear-gradient(180deg, rgba(246, 222, 159, 0.86), rgba(209, 166, 82, 0.64));
 }
-.floor-room.worn::after {
+.region-card.worn::after {
   content: '';
   position: absolute;
   inset: 5px;
@@ -583,13 +624,24 @@ function assignWorkerToRegion(r: TavernRegion) {
   transform: rotate(-10deg);
   pointer-events: none;
 }
-.floor-room strong {
+.region-card-icon {
+  grid-row: 1 / 4;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: rgba(80, 52, 24, 0.12);
+  color: var(--pm-gold);
+}
+.region-card strong {
   font-family: var(--pm-font-display);
   font-size: calc(15px * var(--pm-text-scale));
   letter-spacing: 0.08em;
+  min-width: 0;
 }
-.floor-room span,
-.floor-room em {
+.region-card span:not(.region-card-icon),
+.region-card em {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -597,38 +649,6 @@ function assignWorkerToRegion(r: TavernRegion) {
   color: var(--pm-ink-dim);
   font-size: calc(11px * var(--pm-text-scale));
   font-style: normal;
-}
-.floor-room.rooms {
-  grid-column: 1 / 7;
-  grid-row: 1;
-}
-.floor-room.front {
-  grid-column: 1 / 2;
-  grid-row: 2;
-}
-.floor-room.hall {
-  grid-column: 2 / 5;
-  grid-row: 2 / 4;
-}
-.floor-room.bar {
-  grid-column: 5 / 7;
-  grid-row: 2;
-}
-.floor-room.kitchen {
-  grid-column: 4 / 6;
-  grid-row: 3;
-}
-.floor-room.cellar {
-  grid-column: 6 / 7;
-  grid-row: 3;
-}
-.floor-room.yard {
-  grid-column: 1 / 4;
-  grid-row: 3;
-}
-.floor-room.stable {
-  grid-column: 1 / 7;
-  grid-row: 4;
 }
 .region-detail {
   position: sticky;
@@ -1020,38 +1040,35 @@ function assignWorkerToRegion(r: TavernRegion) {
     flex-direction: column;
     gap: 10px;
   }
-  .floor-plan {
-    display: flex;
-    grid-template-columns: none;
-    grid-template-rows: none;
-    min-height: 0;
-    gap: 6px;
-    padding: 7px;
-    overflow-x: auto;
-    scrollbar-width: none;
+  .region-panel {
+    padding: 9px;
     border-width: 1px;
-    background:
-      linear-gradient(180deg, rgba(255, 245, 215, 0.72), rgba(212, 186, 136, 0.44));
   }
-  .floor-plan::-webkit-scrollbar {
+  .tavern-overview {
+    padding: 9px;
+  }
+  .region-list {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  .region-list::-webkit-scrollbar {
     display: none;
   }
-  .floor-room.rooms,
-  .floor-room.front,
-  .floor-room.hall,
-  .floor-room.bar,
-  .floor-room.kitchen,
-  .floor-room.cellar,
-  .floor-room.yard,
-  .floor-room.stable {
-    grid-column: auto;
-    grid-row: auto;
-    flex: 0 0 74px;
-    min-height: 44px;
-    padding: 6px 7px;
+  .region-card {
+    flex: 0 0 142px;
+    min-height: 78px;
+    padding: 8px;
     border-width: 1px;
+    grid-template-columns: 24px 1fr;
   }
-  .floor-room strong {
+  .region-card-icon {
+    width: 24px;
+    height: 24px;
+  }
+  .region-card strong {
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1059,12 +1076,12 @@ function assignWorkerToRegion(r: TavernRegion) {
     font-size: calc(12px * var(--pm-text-scale));
     letter-spacing: 0;
   }
-  .floor-room span,
-  .floor-room em {
+  .region-card span:not(.region-card-icon),
+  .region-card em {
     font-size: calc(10px * var(--pm-text-scale));
   }
-  .floor-room em,
-  .floor-room.worn::after {
+  .region-card em,
+  .region-card.worn::after {
     display: none;
   }
   .region-detail {

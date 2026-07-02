@@ -1,5 +1,6 @@
 ﻿import {
   parseCraftResult,
+  parseCharacterBehaviorUpdates,
   parseMaintext,
   parseOptions,
   parsePromiseUpdates,
@@ -505,6 +506,7 @@ function normalizeAssistantMessage(raw: string): {
   const craftResult = extractLastTag(cleaned, 'craft_result');
   const guestUpdate = extractLastTag(cleaned, 'guest_update');
   const promiseUpdate = extractLastTag(cleaned, 'promise_update');
+  const characterBehaviorUpdate = extractLastTag(cleaned, 'character_behavior_update');
   const shop = extractLastTag(cleaned, 'shop');
   let maintext = stripHiddenOutputTags(extractLastTag(cleaned, 'maintext') || extractLastTag(cleaned, 'NARRATIVE'));
   if (!maintext && craftResult) {
@@ -535,6 +537,7 @@ function normalizeAssistantMessage(raw: string): {
   if (craftResult) message += `\n\n<craft_result>\n${craftResult}\n</craft_result>`;
   if (guestUpdate) message += `\n\n<guest_update>\n${guestUpdate}\n</guest_update>`;
   if (promiseUpdate) message += `\n\n<promise_update>\n${promiseUpdate}\n</promise_update>`;
+  if (characterBehaviorUpdate) message += `\n\n<character_behavior_update>\n${characterBehaviorUpdate}\n</character_behavior_update>`;
 
   let mvuMessage = message;
   if (updateVariable) mvuMessage += `\n\n<UpdateVariable>\n${updateVariable}\n</UpdateVariable>`;
@@ -551,6 +554,7 @@ function normalizeAssistantMessage(raw: string): {
       craftResult: parseCraftResult(message),
       guestUpdates: parseGuestUpdates(message),
       promiseUpdates: parsePromiseUpdates(message),
+      characterBehaviorUpdates: parseCharacterBehaviorUpdates(message),
       fullMessage: mvuMessage,
     },
   };
@@ -562,6 +566,7 @@ function stripHiddenOutputTags(content: string): string {
     .replace(/<craft_result\b[^>]*>[\s\S]*?<\/craft_result>/gi, '')
     .replace(/<guest_update\b[^>]*>[\s\S]*?<\/guest_update>/gi, '')
     .replace(/<promise_update\b[^>]*>[\s\S]*?<\/promise_update>/gi, '')
+    .replace(/<character_behavior_update\b[^>]*>[\s\S]*?<\/character_behavior_update>/gi, '')
     .replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable>/gi, '')
     .replace(/<JSONPatch\b[^>]*>[\s\S]*?<\/JSONPatch>/gi, '')
     .replace(/<Analysis\b[^>]*>[\s\S]*?<\/Analysis>/gi, '')

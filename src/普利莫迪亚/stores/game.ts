@@ -42,6 +42,17 @@ import {
   type OpeningStoryDraft,
 } from '../services/openingWorkshop';
 import {
+  applyCharacterBehaviorUpdatesToLibrary,
+  characterBehaviorEntryName,
+  createEmptyCharacterBehaviorLibrary,
+  ensureCharacterBehaviorWorldbookEntry,
+  isCharacterBehaviorEntryName,
+  loadCharacterBehaviorLibraryFromEntry,
+  saveCharacterBehaviorLibraryToEntry,
+  type CharacterBehaviorItem,
+  type CharacterBehaviorLibrary,
+} from '../services/characterBehaviorWorldbook';
+import {
   ensureNpcActivityWorldbookBinding,
   loadNpcActivityLibraryFromBoundWorldbookEntries,
   loadNpcActivityLibraryFromActiveWorldbooks,
@@ -74,6 +85,7 @@ import {
   loadLatestAssistantMaintext,
   type GuestUpdateStatus,
   type ParsedCraftResult,
+  type ParsedCharacterBehaviorUpdate,
   type ParsedGuestUpdate,
   type ParsedPromiseUpdate,
   type ParsedShop,
@@ -762,6 +774,7 @@ interface PrimordiaSaveBody {
   turnContextWorldbookBinding?: TurnContextWorldbookBinding | null;
   turnContextWorldbookStatus?: string;
   characterWorldbookBindings?: Record<string, CharacterWorldbookBinding[]>;
+  characterBehaviorLibraries?: Record<string, CharacterBehaviorLibrary>;
   inventory: InventoryItem[];
   satchel?: InventoryItem[];
   temporaryStates?: TemporaryStateTree;
@@ -811,6 +824,7 @@ interface LocalSettlementSnapshot {
   turnContextWorldbookBinding: TurnContextWorldbookBinding | null;
   turnContextWorldbookStatus: string;
   characterWorldbookBindings: Record<string, CharacterWorldbookBinding[]>;
+  characterBehaviorLibraries: Record<string, CharacterBehaviorLibrary>;
   inventory: InventoryItem[];
   satchel: InventoryItem[];
   temporaryStates: TemporaryStateTree;
@@ -922,10 +936,44 @@ function findTavernRegionByMvuName(regionList: TavernRegion[], rawName: string) 
   const exact = regionList.find(region => {
     const idKey = normalizeLooseName(region.id);
     const nameKey = normalizeLooseName(region.name);
-    return key === idKey || key === nameKey || nameKey.includes(key) || key.includes(nameKey);
+    return key === idKey || key === nameKey;
   });
   if (exact) return exact;
-  return regionList.find(region => (aliases[region.id] ?? []).some(alias => key.includes(alias) || alias.includes(key)));
+  return regionList.find(region => (aliases[region.id] ?? []).some(alias => key === normalizeLooseName(alias)));
+}
+
+function tavernRegionIconFromName(name: string) {
+  if (/厨房|灶|炉|餐|食|烹/.test(name)) return 'fire';
+  if (/柜台|酒|账|钱|吧台/.test(name)) return 'coin';
+  if (/客房|卧|睡|宿|床/.test(name)) return 'moon';
+  if (/后院|菜|田|棚|柴|井|园/.test(name)) return 'farm';
+  if (/马|车|厩|路|门|入口/.test(name)) return 'pin';
+  if (/地窖|储藏|仓|库/.test(name)) return 'pot';
+  return 'candle';
+}
+
+function createTavernRegionFromMvuRecord(regionName: string, record: Record<string, any>, fallbackIndex: number): TavernRegion {
+  const name = regionName.trim() || `新空间${fallbackIndex + 1}`;
+  return {
+    id: slugId(name, `region-${fallbackIndex + 1}`),
+    name,
+    subtitle: String(readFirstPath(record, ['副标题', '类型', '功能', 'subtitle'], '故事中形成的空间') || '故事中形成的空间'),
+    icon: String(readFirstPath(record, ['图标', 'icon'], tavernRegionIconFromName(name)) || tavernRegionIconFromName(name)),
+    level: Math.max(1, Math.floor(readNumberPath(record, ['等级', 'level'], 1) ?? 1)),
+    style: String(readFirstPath(record, ['风格', 'style'], '待整理') || '待整理'),
+    condition: normalizeCondition(String(readFirstPath(record, ['状态', 'condition'], '良好') || '良好')),
+    description: String(readFirstPath(record, ['描述', 'description'], `${name}是剧情中逐渐形成的酒馆空间。`) || `${name}是剧情中逐渐形成的酒馆空间。`),
+    staff: String(readFirstPath(record, ['分配员工', 'staff'], '') ?? '').trim() || undefined,
+    facilities: [],
+  };
+}
+
+function ensureTavernRegionFromMvuName(regionList: TavernRegion[], regionName: string, record: Record<string, any>) {
+  const existing = findTavernRegionByMvuName(regionList, regionName);
+  if (existing) return existing;
+  const region = createTavernRegionFromMvuRecord(regionName, record, regionList.length);
+  regionList.push(region);
+  return region;
 }
 
 function normalizeInventoryCategory(value: string): InventoryItem['category'] {
@@ -1465,7 +1513,7 @@ export const useGameStore = defineStore('primordia', () => {
   function npcActivityTargetRegions() {
     const names = tavernRegionNames();
     if (!isLowActivityTime()) return names;
-    const preferred = ['客房', '厨房餐食区', '柜台酒水区', '后院生活区'].filter(name => names.includes(name));
+    const preferred = ['客房', '厨房餐食区', '柜台酒水区', '主厅接待区'].filter(name => names.includes(name));
     return preferred.length ? preferred : names;
   }
 
@@ -2256,20 +2304,9 @@ export const useGameStore = defineStore('primordia', () => {
     protagonist.energy = Math.max(0, Math.min(protagonist.energyMax, Math.floor(Number.isFinite(nextValue) ? nextValue : protagonist.energy || 0)));
   }
 
-  /* 鍏ぇ鍖哄煙 */
+  /* 酒馆成长空间 */
+  const tavernOverview = ref('铁壶酒馆刚刚开张，只有主厅、厨房、柜台和几间能住人的客房真正能用；其余空间仍在故事中慢慢整理出来。');
   const regions = ref<TavernRegion[]>([
-    {
-      id: 'front-door',
-      name: '前门门面区',
-      subtitle: '门廊、招牌、迎客',
-      icon: 'flourish',
-      level: 1,
-      style: '木石混合',
-      condition: '良好',
-      description: '酒馆与街道相接的第一眼印象。这里适合放置招牌、门廊、灯架、等候凳或迎客用的小设施。',
-      staff: undefined,
-      facilities: [],
-    },
     {
       id: 'main-hall',
       name: '主厅接待区',
@@ -2324,42 +2361,6 @@ export const useGameStore = defineStore('primordia', () => {
         { id: 'room-4', name: '四号房', type: '上等客房', priceCopper: 220, comfort: 55, privacy: 55, cleanliness: 78, guest: null, facilities: [] },
       ],
     },
-    {
-      id: 'cellar',
-      name: '地窖储藏区',
-      subtitle: '酒桶、干货、冷藏',
-      icon: 'pot',
-      level: 1,
-      style: '石壁与木桶',
-      condition: '良好',
-      description: '酒水、发酵桶、酱料桶和耐储食材适合放在这里。这里也承接饮品与酱料的长期制作。',
-      staff: undefined,
-      facilities: [],
-    },
-    {
-      id: 'yard',
-      name: '后院生活区',
-      subtitle: '菜地、井、杂务',
-      icon: 'farm',
-      level: 1,
-      style: '泥地与篱笆',
-      condition: '良好',
-      description: '种植、晾晒、取水和杂务发生在这里。自产食材的批次标签也从这里开始。',
-      staff: undefined,
-      facilities: [],
-    },
-    {
-      id: 'stable',
-      name: '马厩交通区',
-      subtitle: '马位、车棚、装卸',
-      icon: 'pin',
-      level: 1,
-      style: '木棚与干草',
-      condition: '良好',
-      description: '商旅、牲口、货车和临时装卸会停在这里。它连接酒馆与外面的道路。',
-      staff: undefined,
-      facilities: [],
-    },
   ]);
 
   /* 库存 */
@@ -2387,6 +2388,7 @@ export const useGameStore = defineStore('primordia', () => {
   const stageNames = ['初识', '熟悉', '信任', '牵挂', '亲近', '默契', '羁绊', '生死相托'];
   const heroines = ref<Heroine[]>([]);
   const characterWorldbookBindings = ref<Record<string, CharacterWorldbookBinding[]>>({});
+  const characterBehaviorLibraries = ref<Record<string, CharacterBehaviorLibrary>>({});
   const heroinePortraitColors = ['#8f5d3f', '#7b6a42', '#6f5f93', '#4d7a72', '#9a5a63', '#80613a'];
   const tavernNpcActivities = ref<TavernNpcActivity[]>([]);
   const lastNpcActivityMinute = ref(currentSerialMinute());
@@ -2894,6 +2896,32 @@ export const useGameStore = defineStore('primordia', () => {
     return sceneLines.join('\n');
   }
 
+  function formatCharacterBehaviorMemoryBlock() {
+    const currentRegion = String(location.protagonistLocated || location.place || protagonist.located || '').trim();
+    const lines: string[] = [];
+    for (const heroine of heroines.value) {
+      const library = characterBehaviorLibraries.value[heroine.id];
+      if (!library?.behaviors?.length) continue;
+      const relevant = library.behaviors
+        .filter(item => {
+          if (!item.behavior) return false;
+          if (!currentRegion) return true;
+          return item.region === currentRegion || item.region === heroine.located || heroine.located === currentRegion;
+        })
+        .slice(0, 3);
+      for (const item of relevant) {
+        const feel = item.protagonistFeel ? ` 主角可感受到：${item.protagonistFeel}` : '';
+        lines.push(`- ${heroine.name}在${item.region || '未定位区域'}逐渐形成习惯：${item.behavior}${feel}`);
+      }
+    }
+    if (!lines.length) return '';
+    return [
+      '【角色行为记忆】',
+      ...lines.slice(0, 8),
+      '这些是前端维护的角色长期行为记忆；请自然承接，不要把本段标题或说明文字写进正文。',
+    ].join('\n');
+  }
+
   function buildSystemJudgementSnapshot(lastActionSummary = ''): SystemJudgementSnapshot {
     const activeShop = generatedShop.value && isCurrentShopLocation(generatedShop.value.name) ? generatedShop.value : null;
     return {
@@ -2946,6 +2974,7 @@ export const useGameStore = defineStore('primordia', () => {
       '如果需要读档摘要，可以在最后输出 <sum>...</sum>，用1-2句话概括时间、地点、人物、事件。',
       '如本回合需要修改变量，可在正文后输出隐藏 <UpdateVariable> 或 <JSONPatch>；这些内容不得出现在 <maintext> 正文中。',
       '如果正文中产生未来承诺、预约、威胁、约好再见、某人说稍后回来等内容，请在正文后输出 <promise_update>...</promise_update> 严格 JSON 数组；trigger_time 必须换算成明确游戏时间 YYYY-MM-DD HH:mm，字段必须包含 action、name、trigger_time、people、event、reminder；不要写自然语言格式，不要把约定记录写进 <maintext>。',
+      '如果角色出现可重复、可成长、可被主角感知的习惯、职责、技能流程或长期互动倾向，请在正文后输出 <character_behavior_update>...</character_behavior_update> 严格 JSON 数组；字段包含 action、character、region、behavior、trigger、source、protagonist_feel；只允许 learn/remove/update；不要记录一次性动作，不要用它创建新区域。',
       needsShop ? '本回合要求生成商铺时，必须在 <maintext> 后输出 <shop>...</shop>。' : '',
       needsCraft ? '本回合要求生成制作结果时，必须在 <maintext> 后输出 <craft_result>...</craft_result>。' : '',
       needsGuestUpdate ? '本回合若新增客人、点单、上菜反馈或客人离开，请在正文后输出 <guest_update>...</guest_update> JSON 数组，供前端服务托盘读取。' : '',
@@ -2991,6 +3020,7 @@ export const useGameStore = defineStore('primordia', () => {
       [
         buildInteractionContextBlock(),
         formatServiceTrayPromptBlock(),
+        formatCharacterBehaviorMemoryBlock(),
         formatTavernNpcActivityPlan(options.npcActivityPlan ?? null),
         formatBusinessVisitorPlan(options.businessVisitorPlan ?? null),
       ]
@@ -4455,6 +4485,7 @@ export const useGameStore = defineStore('primordia', () => {
       turnContextWorldbookBinding: turnContextWorldbookBinding.value ? clonePlain(turnContextWorldbookBinding.value) : null,
       turnContextWorldbookStatus: turnContextWorldbookStatus.value,
       characterWorldbookBindings: clonePlain(characterWorldbookBindings.value),
+      characterBehaviorLibraries: clonePlain(characterBehaviorLibraries.value),
       inventory: clonePlain(inventory.value),
       satchel: clonePlain(satchel.value),
       temporaryStates: clonePlain(temporaryStates.value),
@@ -4515,6 +4546,7 @@ export const useGameStore = defineStore('primordia', () => {
     turnContextWorldbookBinding.value = snapshot.turnContextWorldbookBinding ? clonePlain(snapshot.turnContextWorldbookBinding) : null;
     turnContextWorldbookStatus.value = snapshot.turnContextWorldbookStatus;
     characterWorldbookBindings.value = clonePlain(snapshot.characterWorldbookBindings);
+    characterBehaviorLibraries.value = clonePlain(snapshot.characterBehaviorLibraries);
     inventory.value = clonePlain(snapshot.inventory);
     satchel.value = clonePlain(snapshot.satchel);
     temporaryStates.value = normalizeTemporaryStateTree(snapshot.temporaryStates);
@@ -5494,6 +5526,7 @@ export const useGameStore = defineStore('primordia', () => {
       turnContextWorldbookBinding: turnContextWorldbookBinding.value ? clonePlain(turnContextWorldbookBinding.value) : null,
       turnContextWorldbookStatus: turnContextWorldbookStatus.value,
       characterWorldbookBindings: clonePlain(characterWorldbookBindings.value),
+      characterBehaviorLibraries: clonePlain(characterBehaviorLibraries.value),
       inventory: clonePlain(inventory.value),
       satchel: clonePlain(satchel.value),
       temporaryStates: clonePlain(temporaryStates.value),
@@ -5650,6 +5683,10 @@ export const useGameStore = defineStore('primordia', () => {
         source.characterWorldbookBindings && typeof source.characterWorldbookBindings === 'object'
           ? clonePlain(source.characterWorldbookBindings)
           : clonePlain(characterWorldbookBindings.value),
+      characterBehaviorLibraries:
+        source.characterBehaviorLibraries && typeof source.characterBehaviorLibraries === 'object'
+          ? clonePlain(source.characterBehaviorLibraries)
+          : clonePlain(characterBehaviorLibraries.value),
       tavernNpcActivities: Array.isArray(source.tavernNpcActivities) ? clonePlain(source.tavernNpcActivities) : clonePlain(tavernNpcActivities.value),
       lastNpcActivityMinute: Math.floor(Number(source.lastNpcActivityMinute) || currentSerialMinute()),
       lastNpcActivityTurn: Math.max(0, Math.floor(Number(source.lastNpcActivityTurn) || 0)),
@@ -5821,6 +5858,7 @@ export const useGameStore = defineStore('primordia', () => {
     turnContextWorldbookStatus.value = normalized.turnContextWorldbookStatus || (turnContextWorldbookBinding.value ? '已从存档恢复本回合发送包条目绑定。' : '本回合发送包条目尚未绑定。');
     ensureWeatherForToday();
     characterWorldbookBindings.value = clonePlain(normalized.characterWorldbookBindings ?? {});
+    characterBehaviorLibraries.value = clonePlain(normalized.characterBehaviorLibraries ?? {});
     inventory.value = clonePlain(normalized.inventory);
     satchel.value = clonePlain(normalized.satchel ?? []);
     temporaryStates.value = normalizeTemporaryStateTree(normalized.temporaryStates);
@@ -6081,15 +6119,12 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   const DEFAULT_OPENING_REGION_STYLES = new Set([
-    '木石混合',
     '橡木与石墙',
     '深色橡木',
     '石灶与铁锅',
     '木梁与粗布',
-    '石壁与木桶',
-    '泥地与篱笆',
-    '木棚与干草',
   ]);
+  const OPENING_CORE_REGION_NAMES = new Set(['主厅接待区', '柜台酒水区', '厨房餐食区', '客房']);
 
   function compactOpeningField(value: unknown, maxLength = 120) {
     const text = String(value ?? '')
@@ -6113,6 +6148,12 @@ export const useGameStore = defineStore('primordia', () => {
 
     const regionRoot = asRecord(tavern['区域']);
     if (tavern['区域'] !== regionRoot) tavern['区域'] = regionRoot;
+    if (!String(tavern['整体概况'] ?? '').trim()) {
+      const tavernArchive = compactOpeningField(bundle.tavernProfile.summary || bundle.tavernProfile.profile, 220);
+      tavern['整体概况'] =
+        tavernArchive ||
+        `${draft.tavern.name || '这间酒馆'}刚刚开张，当前只确认主厅、厨房、柜台和客房等基础空间，其余地方仍等待玩家在剧情中整理出来。`;
+    }
 
     const draftStyle = compactOpeningField(draft.tavern.style, 80);
     const tavernArchive = compactOpeningField(bundle.tavernProfile.summary || bundle.tavernProfile.profile, 180);
@@ -6123,7 +6164,7 @@ export const useGameStore = defineStore('primordia', () => {
     const styleSeed = draftStyle || tavernArchive || compactOpeningField(draft.tavern.story, 80) || '本次开局酒馆风格';
     const condition = normalizeCondition(draft.tavern.status);
 
-    regions.value.forEach(region => {
+    regions.value.filter(region => OPENING_CORE_REGION_NAMES.has(region.name)).forEach(region => {
       const record = asRecord(regionRoot[region.name]);
       if (regionRoot[region.name] !== record) regionRoot[region.name] = record;
 
@@ -6168,6 +6209,12 @@ export const useGameStore = defineStore('primordia', () => {
     setPlainPath(statData, '酒馆.所属领地', tavernTerritory);
     setPlainPath(statData, '酒馆.所在城市', tavernCity);
     setPlainPath(statData, '酒馆.今日营业状态', draft.tavern.status.trim() || '准备营业');
+    setPlainPath(
+      statData,
+      '酒馆.整体概况',
+      bundle.tavernProfile.summary ||
+        `${tavernNameText}位于${tavernCity}，当前只确认主厅、厨房、柜台和客房等基础空间；其他角落仍等待玩家在正文行动中清理、命名和改造。`,
+    );
     const openingFunds = copperForOpeningFunds(draft.tavern.funds);
     const openingParts = copperToParts(openingFunds);
     setPlainPath(statData, '酒馆.资金.随身钱袋', {
@@ -6201,6 +6248,9 @@ export const useGameStore = defineStore('primordia', () => {
     clearWeatherForDay();
 
     tavernName.value = draft.tavern.name.trim() || '铁壶酒馆';
+    tavernOverview.value =
+      bundle.tavernProfile.summary ||
+      `${tavernName.value}刚刚开张，只有主厅、厨房、柜台和客房等基础空间真正能用；其余空间仍等待玩家在剧情中整理出来。`;
     location.region = tavernCity;
     setCurrentPlace(tavernPlace, { keepShop: false });
     const openingMapNode = mapNodes.value.find(node => node.name === tavernCity || node.id === normalizeMapNodeId(tavernCity));
@@ -6224,9 +6274,9 @@ export const useGameStore = defineStore('primordia', () => {
     energy.max = 100;
 
     const regionCondition = normalizeCondition(draft.tavern.status);
-    regions.value = regions.value.map(region => ({
+    regions.value = regions.value.filter(region => OPENING_CORE_REGION_NAMES.has(region.name)).map(region => ({
       ...region,
-      condition: region.name === tavernPlace || region.id === 'hall' ? regionCondition : region.condition,
+      condition: region.name === tavernPlace || region.id === 'main-hall' ? regionCondition : region.condition,
     }));
     heroines.value = [];
     tavernNpcActivities.value = [];
@@ -6828,10 +6878,15 @@ export const useGameStore = defineStore('primordia', () => {
     const regionRoot = readRecordPath(data, ['酒馆.区域', '酒馆.区域状态']);
     let changed = false;
 
+    const overview = String(readFirstPath(data, ['酒馆.整体概况', '酒馆.概况', '酒馆.overview'], '') || '').trim();
+    if (overview && overview !== tavernOverview.value) {
+      tavernOverview.value = overview;
+      changed = true;
+    }
+
     for (const [regionName, raw] of Object.entries(regionRoot)) {
       const record = asRecord(raw);
-      const region = findTavernRegionByMvuName(regions.value, regionName);
-      if (!region) continue;
+      const region = ensureTavernRegionFromMvuName(regions.value, regionName, record);
 
       const condition = String(readFirstPath(record, ['状态', 'condition'], '') || '').trim();
       if (condition) {
@@ -7373,6 +7428,7 @@ export const useGameStore = defineStore('primordia', () => {
 
     heroines.value = heroines.value.filter(item => item.id !== heroineId);
     delete characterWorldbookBindings.value[heroine.id];
+    delete characterBehaviorLibraries.value[heroine.id];
     delete temporaryStates.value.人物[heroine.name];
     if (selectedHeroineId.value === heroine.id) selectedHeroineId.value = heroines.value[0]?.id ?? null;
 
@@ -7469,6 +7525,178 @@ export const useGameStore = defineStore('primordia', () => {
     characterWorldbookBindings.value = { ...characterWorldbookBindings.value, [key]: current };
     await writeChatSave();
     return true;
+  }
+
+  function validTavernRegionNames() {
+    return regions.value.map(region => region.name).filter(Boolean);
+  }
+
+  function findHeroineForBehaviorUpdate(update: ParsedCharacterBehaviorUpdate) {
+    const id = String(update.characterId ?? '').trim();
+    const name = String(update.character ?? '').trim();
+    if (id) {
+      const byId = heroines.value.find(heroine => heroine.id === id);
+      if (byId) return byId;
+    }
+    if (!name) return null;
+    return heroines.value.find(heroine => heroine.name === name || heroine.title === name) ?? null;
+  }
+
+  function findCharacterBehaviorBinding(heroine: Heroine) {
+    const expectedName = characterBehaviorEntryName(heroine.name);
+    return (characterWorldbookBindings.value[heroine.id] ?? []).find(binding => {
+      const label = String(binding.label || '');
+      return label === expectedName || isCharacterBehaviorEntryName(label);
+    });
+  }
+
+  async function ensureCharacterBehaviorLibraryBinding(heroine: Heroine) {
+    const existing = findCharacterBehaviorBinding(heroine);
+    if (existing) return existing;
+    const ensured = await ensureCharacterBehaviorWorldbookEntry(heroine.id, heroine.name);
+    const binding: CharacterWorldbookBinding = {
+      id: `character-behavior:${ensured.worldbookName}:${ensured.uid}`,
+      worldbookName: ensured.worldbookName,
+      uid: ensured.uid,
+      label: ensured.entryName,
+      boundAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await bindCharacterWorldbookEntry(heroine.id, binding);
+    return binding;
+  }
+
+  async function loadCharacterBehaviorLibraryForHeroine(heroineId: string) {
+    const heroine = heroines.value.find(item => item.id === heroineId);
+    if (!heroine) return null;
+    const binding = await ensureCharacterBehaviorLibraryBinding(heroine);
+    const library = await loadCharacterBehaviorLibraryFromEntry(binding, heroine.id, heroine.name);
+    characterBehaviorLibraries.value = { ...characterBehaviorLibraries.value, [heroine.id]: clonePlain(library) };
+    await touchCharacterWorldbookBinding(heroine.id, binding.worldbookName, Number(binding.uid), binding.label);
+    return library;
+  }
+
+  async function saveCharacterBehaviorLibraryForHeroine(heroineId: string, library: CharacterBehaviorLibrary) {
+    const heroine = heroines.value.find(item => item.id === heroineId);
+    if (!heroine) return false;
+    const binding = await ensureCharacterBehaviorLibraryBinding(heroine);
+    await saveCharacterBehaviorLibraryToEntry(binding, library);
+    characterBehaviorLibraries.value = { ...characterBehaviorLibraries.value, [heroine.id]: clonePlain(library) };
+    await touchCharacterWorldbookBinding(heroine.id, binding.worldbookName, Number(binding.uid), binding.label);
+    await writeChatSave();
+    return true;
+  }
+
+  async function applyCharacterBehaviorUpdates(updates: ParsedCharacterBehaviorUpdate[] | undefined, completedTurn: number) {
+    if (!updates?.length) return false;
+    const grouped = new Map<string, { heroine: Heroine; updates: ParsedCharacterBehaviorUpdate[] }>();
+    let unknownCharacters = 0;
+    updates.forEach(update => {
+      const heroine = findHeroineForBehaviorUpdate(update);
+      if (!heroine) {
+        unknownCharacters += 1;
+        return;
+      }
+      const current = grouped.get(heroine.id);
+      if (current) current.updates.push(update);
+      else grouped.set(heroine.id, { heroine, updates: [update] });
+    });
+
+    let changed = false;
+    let learned = 0;
+    let unlocated = 0;
+    for (const { heroine, updates: heroineUpdates } of grouped.values()) {
+      try {
+        const binding = await ensureCharacterBehaviorLibraryBinding(heroine);
+        const existing = characterBehaviorLibraries.value[heroine.id]
+          ? clonePlain(characterBehaviorLibraries.value[heroine.id])
+          : await loadCharacterBehaviorLibraryFromEntry(binding, heroine.id, heroine.name);
+        const result = applyCharacterBehaviorUpdatesToLibrary(existing, heroineUpdates, validTavernRegionNames(), completedTurn);
+        if (!result.changed) continue;
+        await saveCharacterBehaviorLibraryToEntry(binding, existing);
+        characterBehaviorLibraries.value = { ...characterBehaviorLibraries.value, [heroine.id]: clonePlain(existing) };
+        await touchCharacterWorldbookBinding(heroine.id, binding.worldbookName, Number(binding.uid), binding.label);
+        changed = true;
+        learned += result.learned;
+        unlocated += result.unlocated;
+        if (result.ignoredUnknownRegion.length) {
+          pushLog('提示', `角色行为库收到未定位区域：${heroine.name} · ${result.ignoredUnknownRegion.join('、')}。未创建新区域。`, {
+            source: 'ai',
+            authoritative: false,
+            tone: 'amber',
+            actionType: 'CHARACTER_BEHAVIOR',
+          });
+        }
+      } catch (error) {
+        pushLog('提示', `角色行为库写入失败：${heroine.name} · ${error instanceof Error ? error.message : String(error)}`, {
+          source: 'engine',
+          authoritative: true,
+          tone: 'red',
+          actionType: 'CHARACTER_BEHAVIOR',
+        });
+      }
+    }
+
+    if (unknownCharacters) {
+      pushLog('提示', `角色行为库忽略了 ${unknownCharacters} 条未知角色更新。`, {
+        source: 'ai',
+        authoritative: false,
+        tone: 'amber',
+        actionType: 'CHARACTER_BEHAVIOR',
+      });
+    }
+    if (changed) {
+      markLocalStateDirty();
+      await writeChatSave();
+      pushLog('系统', `角色行为库已学习 ${learned} 条${unlocated ? `，其中 ${unlocated} 条暂未定位到现有区域` : ''}。`, {
+        source: 'ai',
+        authoritative: false,
+        tone: 'violet',
+        actionType: 'CHARACTER_BEHAVIOR',
+      });
+    }
+    return changed;
+  }
+
+  async function addCharacterBehavior(heroineId: string, input: Partial<CharacterBehaviorItem>) {
+    const heroine = heroines.value.find(item => item.id === heroineId);
+    if (!heroine) return false;
+    const library = characterBehaviorLibraries.value[heroine.id]
+      ? clonePlain(characterBehaviorLibraries.value[heroine.id])
+      : createEmptyCharacterBehaviorLibrary(heroine.id, heroine.name);
+    const behavior = String(input.behavior ?? '').trim();
+    if (!behavior) return false;
+    const update: ParsedCharacterBehaviorUpdate = {
+      action: 'learn',
+      character: heroine.name,
+      characterId: heroine.id,
+      region: String(input.region ?? heroine.located ?? '').trim(),
+      behavior,
+      trigger: String(input.trigger ?? 'manual').trim(),
+      source: String(input.source ?? '玩家手动维护').trim(),
+      protagonistFeel: String(input.protagonistFeel ?? '').trim(),
+    };
+    applyCharacterBehaviorUpdatesToLibrary(library, [update], validTavernRegionNames(), successfulNarrationTurn.value);
+    return saveCharacterBehaviorLibraryForHeroine(heroine.id, library);
+  }
+
+  async function updateCharacterBehavior(heroineId: string, behaviorId: string, patch: Partial<CharacterBehaviorItem>) {
+    const library = characterBehaviorLibraries.value[heroineId] ? clonePlain(characterBehaviorLibraries.value[heroineId]) : null;
+    if (!library) return false;
+    const updateItem = (item: CharacterBehaviorItem) => item.id === behaviorId ? { ...item, ...patch, updatedAt: Date.now() } : item;
+    library.behaviors = library.behaviors.map(updateItem);
+    library.unlocatedBehaviors = library.unlocatedBehaviors.map(updateItem);
+    return saveCharacterBehaviorLibraryForHeroine(heroineId, library);
+  }
+
+  async function deleteCharacterBehavior(heroineId: string, behaviorId: string) {
+    const library = characterBehaviorLibraries.value[heroineId] ? clonePlain(characterBehaviorLibraries.value[heroineId]) : null;
+    if (!library) return false;
+    const before = library.behaviors.length + library.unlocatedBehaviors.length;
+    library.behaviors = library.behaviors.filter(item => item.id !== behaviorId);
+    library.unlocatedBehaviors = library.unlocatedBehaviors.filter(item => item.id !== behaviorId);
+    if (before === library.behaviors.length + library.unlocatedBehaviors.length) return false;
+    return saveCharacterBehaviorLibraryForHeroine(heroineId, library);
   }
 
   async function loadFromLatestAssistantPatch(options: { force?: boolean } = {}) {
@@ -7650,6 +7878,10 @@ export const useGameStore = defineStore('primordia', () => {
         if (result.latest?.craftResult) applyCraftResult(result.latest.craftResult);
         if (result.latest?.guestUpdates?.length) applyGuestUpdates(result.latest.guestUpdates, successfulNarrationTurn.value + 1);
         if (result.latest?.promiseUpdates?.length) applyPromiseUpdates(result.latest.promiseUpdates);
+        const completedTurn = successfulNarrationTurn.value + 1;
+        if (result.latest?.characterBehaviorUpdates?.length) {
+          await applyCharacterBehaviorUpdates(result.latest.characterBehaviorUpdates, completedTurn);
+        }
         if (result.latest?.shop && promptAcceptsGeneratedShop(scenePrompt)) {
           applyGeneratedShop(result.latest.shop);
           currentTab.value = 'shop';
@@ -7663,7 +7895,6 @@ export const useGameStore = defineStore('primordia', () => {
           });
           if (!isCurrentShopLocation()) clearGeneratedShop({ silent: true });
         } else if (sceneUpdatedFromMvu && !isCurrentShopLocation()) clearGeneratedShop({ silent: true });
-        const completedTurn = successfulNarrationTurn.value + 1;
         commitTavernNpcActivityPlan(options.npcActivityPlan ?? null, completedTurn);
         commitManualWorkerAssignNpcActivities(completedTurn);
         commitBusinessVisitorPlan(options.businessVisitorPlan ?? null);
@@ -7848,6 +8079,7 @@ export const useGameStore = defineStore('primordia', () => {
     lastShopRefreshDay,
     location,
     tavernName,
+    tavernOverview,
     walletCopper,
     cashboxCopper,
     walletParts,
@@ -7896,6 +8128,7 @@ export const useGameStore = defineStore('primordia', () => {
     openingSave,
     shouldShowOpeningWorkshop,
     characterWorldbookBindings,
+    characterBehaviorLibraries,
     stageNames,
     mapNodes,
     currentMapId,
@@ -7940,6 +8173,10 @@ export const useGameStore = defineStore('primordia', () => {
     clearWeatherWorldbookBindings,
     ensureTurnContextWorldbook,
     refreshTurnContextWorldbookBinding,
+    loadCharacterBehaviorLibraryForHeroine,
+    addCharacterBehavior,
+    updateCharacterBehavior,
+    deleteCharacterBehavior,
     weatherWorldbookFormatTemplate,
     fullWeatherWorldbookTemplate,
     monthWeatherWorldbookTemplate,
@@ -8021,9 +8258,3 @@ export const useGameStore = defineStore('primordia', () => {
     restoreGeneratedShopFromLatestMessage,
   };
 });
-
-
-
-
-
-

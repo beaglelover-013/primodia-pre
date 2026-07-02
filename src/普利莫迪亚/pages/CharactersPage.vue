@@ -27,6 +27,18 @@ const selectedId = computed({
 });
 const selected = computed(() => visibleHeroines.value.find(h => h.id === selectedId.value) ?? visibleHeroines.value[0] ?? null);
 const selectedWorldbookBindings = computed(() => (selected.value ? (game.characterWorldbookBindings[selected.value.id] ?? []) : []));
+const selectedBehaviorLibrary = computed(() => (selected.value ? game.characterBehaviorLibraries[selected.value.id] ?? null : null));
+const selectedBehaviorGroups = computed(() => {
+  const library = selectedBehaviorLibrary.value;
+  if (!library) return [];
+  const groups = new Map<string, Array<(typeof library.behaviors)[number]>>();
+  for (const item of library.behaviors) {
+    const region = item.region || '未定位';
+    groups.set(region, [...(groups.get(region) ?? []), item]);
+  }
+  if (library.unlocatedBehaviors.length) groups.set('未定位行为', library.unlocatedBehaviors);
+  return [...groups.entries()].map(([region, items]) => ({ region, items }));
+});
 const selectedCgSlots = computed(() => {
   if (!selected.value) return [];
   return selected.value.cgSlots?.length
@@ -122,6 +134,9 @@ const createOpen = ref(false);
 const createWorldbookName = ref('');
 const createEntryName = ref('');
 const createEntryContent = ref('');
+const behaviorRegion = ref('');
+const behaviorText = ref('');
+const behaviorFeel = ref('');
 
 const worldbookApiReady = computed(() => isWorldbookApiAvailable());
 const activeWorldbooks = computed(() => getActiveWorldbookNames());
@@ -176,6 +191,51 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  () => selected.value?.id,
+  heroineId => {
+    if (!heroineId) return;
+    behaviorRegion.value = selected.value?.located ?? '';
+    if (!game.characterBehaviorLibraries[heroineId]) void game.loadCharacterBehaviorLibraryForHeroine(heroineId);
+  },
+  { immediate: true },
+);
+
+async function refreshBehaviorLibrary() {
+  if (!selected.value) return;
+  await game.loadCharacterBehaviorLibraryForHeroine(selected.value.id);
+}
+
+async function addBehaviorLibraryItem() {
+  if (!selected.value || !behaviorText.value.trim()) return;
+  await game.addCharacterBehavior(selected.value.id, {
+    region: behaviorRegion.value.trim() || selected.value.located,
+    behavior: behaviorText.value.trim(),
+    protagonistFeel: behaviorFeel.value.trim(),
+    trigger: 'manual',
+    source: '玩家手动维护',
+  });
+  behaviorText.value = '';
+  behaviorFeel.value = '';
+}
+
+async function editBehaviorLibraryItem(item: { id: string; behavior: string; region: string; protagonistFeel: string }) {
+  if (!selected.value) return;
+  const nextBehavior = window.prompt('修改这条行为', item.behavior);
+  if (nextBehavior === null) return;
+  const nextFeel = window.prompt('主角能感受到什么？', item.protagonistFeel ?? '');
+  await game.updateCharacterBehavior(selected.value.id, item.id, {
+    behavior: nextBehavior.trim() || item.behavior,
+    protagonistFeel: nextFeel?.trim() ?? item.protagonistFeel,
+  });
+}
+
+async function deleteBehaviorLibraryItem(item: { id: string; behavior: string }) {
+  if (!selected.value) return;
+  if (!window.confirm(`删除这条行为记忆吗？\n${item.behavior}`)) return;
+  await game.deleteCharacterBehavior(selected.value.id, item.id);
+}
 
 function entryKeysText(entry: EditableWorldbookEntry | null) {
   const keys = entry?.strategy?.keys;
@@ -450,6 +510,52 @@ async function createWorldbookEntryForSelected() {
             <div class="pm-dim">推荐: 关注精力, 适时赠送「{{ selected.gift ?? '一壶热茶' }}」推进。</div>
           </template>
           <div v-else class="pm-empty">点击左侧卡片选择一位角色, 查看专属阶段图谱。</div>
+        </div>
+
+        <div class="side-card pm-card behavior-card">
+          <h3>角色行为库 · {{ selected?.name ?? '未选择' }}</h3>
+          <template v-if="selected">
+            <p class="pm-dim">
+              这里记录这个角色逐渐学会的习惯、职责和长期互动倾向。条目默认写入专属世界书，但不会直接启用进提示词。
+            </p>
+            <div class="card-actions behavior-actions">
+              <button class="pm-btn sm ghost" @click="refreshBehaviorLibrary">
+                <PmIcon name="check" :size="12" /> 重新读取
+              </button>
+            </div>
+            <div v-if="selectedBehaviorGroups.length === 0" class="pm-empty mini">
+              暂无行为记忆。AI 学到稳定习惯后会自动写入，也可以在下面手动添加。
+            </div>
+            <div v-else class="behavior-group-list">
+              <section v-for="group in selectedBehaviorGroups" :key="group.region" class="behavior-group">
+                <header>
+                  <strong>{{ group.region }}</strong>
+                  <span class="pm-tag dim">{{ group.items.length }} 条</span>
+                </header>
+                <article v-for="item in group.items" :key="item.id" class="behavior-item">
+                  <p>{{ item.behavior }}</p>
+                  <small v-if="item.protagonistFeel">主角可感受到：{{ item.protagonistFeel }}</small>
+                  <footer>
+                    <button class="pm-btn sm ghost" @click="editBehaviorLibraryItem(item)">
+                      <PmIcon name="scroll" :size="12" /> 编辑
+                    </button>
+                    <button class="pm-btn sm danger" @click="deleteBehaviorLibraryItem(item)">
+                      <PmIcon name="x" :size="12" /> 删除
+                    </button>
+                  </footer>
+                </article>
+              </section>
+            </div>
+            <div class="behavior-form">
+              <input v-model="behaviorRegion" class="pm-input" placeholder="区域，例如：主厅接待区" />
+              <textarea v-model="behaviorText" class="pm-textarea compact" placeholder="行为，例如：会主动擦桌子并整理歪掉的椅子。"></textarea>
+              <input v-model="behaviorFeel" class="pm-input" placeholder="主角感受，可选" />
+              <button class="pm-btn sm" :disabled="!behaviorText.trim()" @click="addBehaviorLibraryItem">
+                <PmIcon name="plus" :size="12" /> 添加行为
+              </button>
+            </div>
+          </template>
+          <div v-else class="pm-empty mini">先选择一位配角。</div>
         </div>
 
         <div class="side-card pm-card worldbook-card">
@@ -1096,9 +1202,69 @@ async function createWorldbookEntryForSelected() {
   color: var(--pm-ink-dim);
 }
 
+.behavior-card,
 .worldbook-card {
   display: grid;
   gap: 8px;
+}
+.behavior-card p {
+  margin: 0;
+}
+.behavior-group-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.behavior-group {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(110, 80, 34, 0.34);
+  border-radius: 6px;
+  background: rgba(255, 248, 226, 0.42);
+}
+.behavior-group header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.behavior-group strong {
+  color: var(--pm-ink);
+  font-family: var(--pm-font-display);
+  font-size: calc(13px * var(--pm-text-scale));
+}
+.behavior-item {
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border-radius: 5px;
+  background: rgba(255, 245, 215, 0.58);
+  border: 1px dashed rgba(110, 80, 34, 0.24);
+}
+.behavior-item p {
+  color: var(--pm-ink-soft);
+  font-size: calc(11.5px * var(--pm-text-scale));
+  line-height: 1.6;
+}
+.behavior-item small {
+  color: var(--pm-ink-dim);
+  font-size: calc(10.5px * var(--pm-text-scale));
+  line-height: 1.5;
+}
+.behavior-item footer,
+.behavior-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.behavior-form {
+  display: grid;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(110, 80, 34, 0.28);
 }
 .worldbook-actions,
 .worldbook-bind-toolbar {

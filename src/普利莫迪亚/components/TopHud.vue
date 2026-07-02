@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useGameStore } from '../stores/game';
+import CalendarPopover from './CalendarPopover.vue';
 import PmIcon from './PmIcon.vue';
 
 const game = useGameStore();
@@ -26,6 +27,33 @@ const placeText = computed(() => {
 });
 const canRerollWeather = computed(() => game.weatherLibraryStats().currentMonthCount > 0);
 const activeTemporaryStates = computed(() => game.flattenTemporaryStates().slice(0, 4));
+const isCalendarOpen = ref(false);
+const calendarAnchor = ref<HTMLElement | null>(null);
+
+function closeCalendar() {
+  isCalendarOpen.value = false;
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  if (!isCalendarOpen.value) return;
+  const target = event.target;
+  if (target instanceof Node && calendarAnchor.value?.contains(target)) return;
+  closeCalendar();
+}
+
+function handleEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeCalendar();
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClick);
+  document.addEventListener('keydown', handleEscape);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClick);
+  document.removeEventListener('keydown', handleEscape);
+});
 </script>
 
 <template>
@@ -41,11 +69,19 @@ const activeTemporaryStates = computed(() => game.flattenTemporaryStates().slice
           <span class="brand-sub">PRIMORDIA · CHRONICLES</span>
         </div>
       </div>
-      <div class="hud-date" :title="game.clockText">
+      <div ref="calendarAnchor" class="hud-date-shell">
+      <button
+        class="hud-date"
+        type="button"
+        :title="`${game.clockText} · 打开日历`"
+        @click.stop="isCalendarOpen = !isCalendarOpen"
+      >
         <PmIcon name="sun" :size="14" />
         <span>{{ game.dateText }}</span>
         <span v-if="game.isMarketDay" class="market-day-tag">市日</span>
         <small>{{ game.clockText }}</small>
+      </button>
+      <CalendarPopover v-if="isCalendarOpen" class="hud-calendar-popover" />
       </div>
     </div>
 
@@ -115,7 +151,7 @@ const activeTemporaryStates = computed(() => game.flattenTemporaryStates().slice
 <style scoped>
 .hud {
   position: relative;
-  z-index: 8;
+  z-index: 6200;
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
   align-items: center;
@@ -190,13 +226,33 @@ const activeTemporaryStates = computed(() => game.flattenTemporaryStates().slice
   color: var(--pm-gold);
 }
 
+.hud-date-shell {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
 .hud-date {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: calc(12.5px * var(--pm-text-scale));
+  padding: 0;
   color: var(--pm-parch-soft);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: calc(12.5px * var(--pm-text-scale));
   letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: left;
+}
+.hud-date:hover {
+  color: var(--pm-gold-bright);
+}
+.hud-calendar-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 6300;
 }
 .hud-date small {
   padding-left: 2px;
@@ -404,7 +460,7 @@ const activeTemporaryStates = computed(() => game.flattenTemporaryStates().slice
   .brand-text {
     align-items: flex-start;
   }
-  .hud-date {
+  .hud-date-shell {
     flex-basis: 100%;
     padding-left: 50px;
   }
@@ -463,14 +519,22 @@ const activeTemporaryStates = computed(() => game.flattenTemporaryStates().slice
   .brand-sub {
     display: none;
   }
-  .hud-date {
+  .hud-date-shell {
     min-width: 0;
     padding-left: 0;
+  }
+  .hud-date {
+    width: 100%;
     overflow: hidden;
     font-size: calc(10.5px * var(--pm-text-scale));
     white-space: normal;
     line-height: 1.35;
     text-overflow: ellipsis;
+  }
+  .hud-calendar-popover {
+    position: fixed;
+    top: auto;
+    left: 10px;
   }
   .hud-date small {
     font-size: calc(10px * var(--pm-text-scale));

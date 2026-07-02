@@ -11,6 +11,7 @@ export interface StoryMessagePayload {
   craftResult?: ParsedCraftResult;
   guestUpdates?: ParsedGuestUpdate[];
   promiseUpdates?: ParsedPromiseUpdate[];
+  characterBehaviorUpdates?: ParsedCharacterBehaviorUpdate[];
   messageId?: number;
   userMessageId?: number;
   fullMessage?: string;
@@ -74,12 +75,35 @@ export interface ParsedPromiseUpdate {
   reminder: string;
 }
 
+export type CharacterBehaviorUpdateAction = 'learn' | 'remove' | 'update';
+
+export interface ParsedCharacterBehaviorUpdate {
+  action: CharacterBehaviorUpdateAction;
+  character: string;
+  characterId?: string;
+  region: string;
+  behavior: string;
+  trigger: string;
+  source: string;
+  protagonistFeel: string;
+}
+
 export interface StoryIndexItem extends StoryMessagePayload {
   messageId: number;
   preview: string;
 }
 
-const HIDDEN_STORY_TAGS = ['shop', 'craft_result', 'guest_update', 'promise_update', 'UpdateVariable', 'JSONPatch', 'Analysis', 'CONTEXT_conception'];
+const HIDDEN_STORY_TAGS = [
+  'shop',
+  'craft_result',
+  'guest_update',
+  'promise_update',
+  'character_behavior_update',
+  'UpdateVariable',
+  'JSONPatch',
+  'Analysis',
+  'CONTEXT_conception',
+];
 const LEGACY_NARRATIVE_TAG = 'NARRATIVE';
 const MAX_SHOP_PRODUCTS = 16;
 const FRONTEND_PLACEHOLDER_PATTERN =
@@ -204,6 +228,7 @@ function parseStoryMessage(messageContent: string, messageId?: number): StoryMes
     craftResult: parseCraftResult(messageContent),
     guestUpdates: parseGuestUpdates(messageContent),
     promiseUpdates: parsePromiseUpdates(messageContent),
+    characterBehaviorUpdates: parseCharacterBehaviorUpdates(messageContent),
     messageId,
     userMessageId: findPreviousUserMessageId(messageId),
     fullMessage: messageContent,
@@ -667,6 +692,55 @@ export function parsePromiseUpdates(messageContent: string): ParsedPromiseUpdate
     return entries
       .map(entry => normalizePromiseUpdate(entry))
       .filter((entry): entry is ParsedPromiseUpdate => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeCharacterBehaviorAction(raw: string): CharacterBehaviorUpdateAction {
+  const action = raw.trim().toLowerCase();
+  if (action === 'remove' || action === 'delete' || action === '删除' || action === '移除') return 'remove';
+  if (action === 'update' || action === 'edit' || action === '修改' || action === '更新') return 'update';
+  return 'learn';
+}
+
+function normalizeCharacterBehaviorUpdate(value: unknown): ParsedCharacterBehaviorUpdate | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const action = normalizeCharacterBehaviorAction(readJsonFirstString(record, ['action', '动作', '操作']));
+  const character = readJsonFirstString(record, ['character', 'characterName', 'name', '角色', '人物', '角色名']);
+  const characterId = readJsonFirstString(record, ['character_id', 'characterId', 'id', '角色id', '角色ID']);
+  const region = readJsonFirstString(record, ['region', 'area', 'location', '区域', '地点']);
+  const behavior = readJsonFirstString(record, ['behavior', '行为', '习惯', '内容']);
+  const trigger = readJsonFirstString(record, ['trigger', '触发', '触发方式']) || 'observed';
+  const source = readJsonFirstString(record, ['source', '来源', '依据']);
+  const protagonistFeel = readJsonFirstString(record, ['protagonist_feel', 'protagonistFeel', '主角感受', '主角可感受到']);
+
+  if (!character && !characterId) return undefined;
+  if (!behavior) return undefined;
+
+  return {
+    action,
+    character,
+    ...(characterId ? { characterId } : {}),
+    region,
+    behavior,
+    trigger,
+    source,
+    protagonistFeel,
+  };
+}
+
+export function parseCharacterBehaviorUpdates(messageContent: string): ParsedCharacterBehaviorUpdate[] {
+  const updateText = extractLastTag(stripThinkingBlocks(messageContent), 'character_behavior_update');
+  if (!updateText) return [];
+
+  try {
+    const parsed = parseLooseJson(cleanJsonLikeText(updateText));
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries
+      .map(entry => normalizeCharacterBehaviorUpdate(entry))
+      .filter((entry): entry is ParsedCharacterBehaviorUpdate => Boolean(entry));
   } catch {
     return [];
   }
