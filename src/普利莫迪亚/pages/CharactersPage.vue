@@ -28,6 +28,7 @@ const selectedId = computed({
 const selected = computed(() => visibleHeroines.value.find(h => h.id === selectedId.value) ?? visibleHeroines.value[0] ?? null);
 const selectedWorldbookBindings = computed(() => (selected.value ? (game.characterWorldbookBindings[selected.value.id] ?? []) : []));
 const selectedBehaviorLibrary = computed(() => (selected.value ? game.characterBehaviorLibraries[selected.value.id] ?? null : null));
+const cgRatingTab = ref<'sfw' | 'nsfw'>('sfw');
 const selectedBehaviorGroups = computed(() => {
   const library = selectedBehaviorLibrary.value;
   if (!library) return [];
@@ -49,6 +50,15 @@ const selectedCgSlots = computed(() => {
         unlocked: idx === 0,
         note: '之后把图床链接填到角色数据的 url 字段。',
       }));
+});
+const visibleCgSlots = computed(() => selectedCgSlots.value.filter(item => (item.rating ?? 'sfw') === cgRatingTab.value));
+const selectedCgCounts = computed(() => ({
+  sfw: selectedCgSlots.value.filter(item => (item.rating ?? 'sfw') === 'sfw').length,
+  nsfw: selectedCgSlots.value.filter(item => item.rating === 'nsfw').length,
+}));
+
+watch(selectedId, () => {
+  cgRatingTab.value = 'sfw';
 });
 
 function hpPhase(h: Heroine) {
@@ -102,6 +112,7 @@ async function sendGift(item: '橙皮陈酿' | '泥金蜂蜜小罐' | '银烛台
 
 async function deleteCharacter(h: Heroine) {
   if (!window.confirm(`确定删除配角「${h.name}」吗？这会从当前变量和人物羁绊列表里移除。`)) return;
+  if (!window.confirm(`再次确认删除「${h.name}」？删除后会同步移除她的世界书绑定和行为库缓存。`)) return;
   await game.deleteHeroine(h.id);
 }
 
@@ -604,8 +615,16 @@ async function createWorldbookEntryForSelected() {
 
         <div class="side-card pm-card">
           <h3>CG 收纳 · {{ selected?.name ?? '未选择' }}</h3>
+          <div class="cg-rating-tabs" role="tablist" aria-label="CG 分区">
+            <button type="button" :class="{ active: cgRatingTab === 'sfw' }" @click="cgRatingTab = 'sfw'">
+              SFW <span>{{ selectedCgCounts.sfw }}</span>
+            </button>
+            <button type="button" :class="{ active: cgRatingTab === 'nsfw' }" @click="cgRatingTab = 'nsfw'">
+              NSFW <span>{{ selectedCgCounts.nsfw }}</span>
+            </button>
+          </div>
           <div v-if="selected" class="cg-grid-side">
-            <article v-for="cg in selectedCgSlots" :key="cg.id" class="cg-slot" :class="{ locked: !cg.unlocked }">
+            <article v-for="cg in visibleCgSlots" :key="cg.id" class="cg-slot" :class="{ locked: !cg.unlocked }">
               <div class="cg-thumb">
                 <img v-if="cg.url" :src="cg.url" :alt="cg.title" />
                 <div v-else class="cg-placeholder">
@@ -1117,6 +1136,38 @@ async function createWorldbookEntryForSelected() {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
+.cg-rating-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+.cg-rating-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border-radius: 6px;
+  border: 1px solid rgba(110, 80, 34, 0.42);
+  background: rgba(255, 245, 215, 0.42);
+  color: var(--pm-ink-dim);
+  font-weight: 700;
+  cursor: pointer;
+}
+.cg-rating-tabs button.active {
+  color: var(--pm-ink);
+  border-color: rgba(170, 121, 37, 0.7);
+  background: linear-gradient(180deg, rgba(249, 221, 143, 0.95), rgba(153, 103, 36, 0.68));
+  box-shadow: 0 8px 18px -14px rgba(54, 31, 10, 0.7);
+}
+.cg-rating-tabs span {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(47, 30, 14, 0.18);
+  font-size: calc(10px * var(--pm-text-scale));
+}
 .cg-slot {
   overflow: hidden;
   border: 1px solid rgba(110, 80, 34, 0.42);
@@ -1442,3 +1493,4 @@ async function createWorldbookEntryForSelected() {
   }
 }
 </style>
+

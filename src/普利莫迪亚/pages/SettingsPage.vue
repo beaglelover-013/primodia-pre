@@ -1201,7 +1201,12 @@ async function importSaveFile(event: Event) {
 </template>
 
 <style scoped>
+#page-settings {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
 .settings-tabs {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
@@ -1209,6 +1214,8 @@ async function importSaveFile(event: Event) {
   border-bottom: 1px dashed var(--pm-edge-soft);
 }
 .settings-tab {
+  position: relative;
+  z-index: 1;
   display: grid;
   gap: 3px;
   min-height: 58px;
@@ -1242,6 +1249,8 @@ async function importSaveFile(event: Event) {
   line-height: 1.35;
 }
 .settings-grid {
+  position: relative;
+  z-index: 0;
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

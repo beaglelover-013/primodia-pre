@@ -444,15 +444,30 @@ function extractLastTag(content: string, tagName: string): string {
 function extractStreamingMaintext(fullText: string): string {
   const cleaned = stripThinkingBlocks(fullText);
   const maintext = cleaned.match(/<maintext\b[^>]*>([\s\S]*?)(?:<\/maintext>|$)/i);
-  if (maintext?.[1]) return maintext[1].trim();
+  if (maintext?.[1]) return stripHiddenOutputTags(maintext[1]).trim();
+
+  const narrative = cleaned.match(/<NARRATIVE\b[^>]*>([\s\S]*?)(?:<\/NARRATIVE>|$)/i);
+  if (narrative?.[1]) return stripHiddenOutputTags(narrative[1]).trim();
 
   const openTagStart = cleaned.toLowerCase().lastIndexOf('<maintext');
   if (openTagStart !== -1) {
     const tagEnd = cleaned.indexOf('>', openTagStart);
-    if (tagEnd !== -1) return cleaned.slice(tagEnd + 1).trim();
+    if (tagEnd !== -1) return stripHiddenOutputTags(cleaned.slice(tagEnd + 1)).trim();
   }
 
-  return '';
+  const openNarrativeStart = cleaned.toLowerCase().lastIndexOf('<narrative');
+  if (openNarrativeStart !== -1) {
+    const tagEnd = cleaned.indexOf('>', openNarrativeStart);
+    if (tagEnd !== -1) return stripHiddenOutputTags(cleaned.slice(tagEnd + 1)).trim();
+  }
+
+  const visible = stripHiddenOutputTags(cleaned)
+    .replace(/```[\w-]*\s*/g, '')
+    .replace(/```/g, '')
+    .replace(/<[^>\n]*$/g, '')
+    .trim();
+  if (/^</.test(visible)) return '';
+  return visible;
 }
 
 async function readBaseMvuData(): Promise<Record<string, any>> {

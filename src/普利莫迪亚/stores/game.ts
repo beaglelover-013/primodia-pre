@@ -252,6 +252,7 @@ export interface CharacterCg {
   title: string;
   url?: string;
   unlocked: boolean;
+  rating?: 'sfw' | 'nsfw';
   note?: string;
 }
 
@@ -1482,7 +1483,15 @@ export const useGameStore = defineStore('primordia', () => {
 
   function tavernRegionNames() {
     const pools = effectiveNpcActivityPools();
-    return regions.value.map(region => region.name).filter(name => name && pools[name]);
+    const personalRegions = new Set(
+      Object.values(characterBehaviorLibraries.value)
+        .flatMap(library => library.behaviors ?? [])
+        .map(item => item.region)
+        .filter(Boolean),
+    );
+    return regions.value
+      .map(region => region.name)
+      .filter(name => name && (pools[name] || personalRegions.has(name)));
   }
 
   function resolveTavernNpcRegion(value: string) {
@@ -1499,6 +1508,14 @@ export const useGameStore = defineStore('primordia', () => {
 
   function pickRandom<T>(list: T[]) {
     return list[Math.floor(Math.random() * list.length)];
+  }
+
+  function normalizeNpcBehaviorCandidate(value: unknown) {
+    return String(value ?? '')
+      .trim()
+      .replace(/^[-*•\d.、\s]+/, '')
+      .replace(/[。.!！?？；;]+$/g, '')
+      .slice(0, 18);
   }
 
   function isRestNpcActivity(behavior: string) {
@@ -1581,7 +1598,14 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function buildNpcActivityEntry(heroine: Heroine, fromRegion: string, toRegion: string, source: TavernNpcActivity['source'] = 'auto') {
-    const pool = effectiveNpcActivityPools()[toRegion] ?? [];
+    const personalPool = (characterBehaviorLibraries.value[heroine.id]?.behaviors ?? [])
+      .filter(item => item.region === toRegion && item.behavior)
+      .map(item => normalizeNpcBehaviorCandidate(item.behavior))
+      .filter(Boolean);
+    const globalPool = (effectiveNpcActivityPools()[toRegion] ?? [])
+      .map(normalizeNpcBehaviorCandidate)
+      .filter(Boolean);
+    const pool = personalPool.length ? personalPool : globalPool;
     const behavior = pickRandom(pool);
     if (!behavior) return null;
     return {
@@ -1640,8 +1664,11 @@ export const useGameStore = defineStore('primordia', () => {
 
   function formatNpcActivityLines(entries: TavernNpcActivity[], referenceTurn = successfulNarrationTurn.value) {
     return entries.map(entry => {
+      const behaviors = entry.behaviors
+        .map(item => normalizeNpcBehaviorCandidate(item).replace(/^交谈[:：]/, '闲谈'))
+        .filter(Boolean);
       const remaining = Math.max(1, (entry.expiresTurn ?? (referenceTurn + safeNpcActivityKeepTurns())) - referenceTurn);
-      return `${entry.heroineName}正在${entry.toRegion}做${entry.behaviors.join('、')}。还会保持${remaining}回合。`;
+      return `${entry.heroineName}在${entry.toRegion}${behaviors.join('、')}（剩余${remaining}回合）。`;
     });
   }
 
@@ -2897,29 +2924,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function formatCharacterBehaviorMemoryBlock() {
-    const currentRegion = String(location.protagonistLocated || location.place || protagonist.located || '').trim();
-    const lines: string[] = [];
-    for (const heroine of heroines.value) {
-      const library = characterBehaviorLibraries.value[heroine.id];
-      if (!library?.behaviors?.length) continue;
-      const relevant = library.behaviors
-        .filter(item => {
-          if (!item.behavior) return false;
-          if (!currentRegion) return true;
-          return item.region === currentRegion || item.region === heroine.located || heroine.located === currentRegion;
-        })
-        .slice(0, 3);
-      for (const item of relevant) {
-        const feel = item.protagonistFeel ? ` 主角可感受到：${item.protagonistFeel}` : '';
-        lines.push(`- ${heroine.name}在${item.region || '未定位区域'}逐渐形成习惯：${item.behavior}${feel}`);
-      }
-    }
-    if (!lines.length) return '';
-    return [
-      '【角色行为记忆】',
-      ...lines.slice(0, 8),
-      '这些是前端维护的角色长期行为记忆；请自然承接，不要把本段标题或说明文字写进正文。',
-    ].join('\n');
+    return '';
   }
 
   function buildSystemJudgementSnapshot(lastActionSummary = ''): SystemJudgementSnapshot {
@@ -2974,7 +2979,15 @@ export const useGameStore = defineStore('primordia', () => {
       '如果需要读档摘要，可以在最后输出 <sum>...</sum>，用1-2句话概括时间、地点、人物、事件。',
       '如本回合需要修改变量，可在正文后输出隐藏 <UpdateVariable> 或 <JSONPatch>；这些内容不得出现在 <maintext> 正文中。',
       '如果正文中产生未来承诺、预约、威胁、约好再见、某人说稍后回来等内容，请在正文后输出 <promise_update>...</promise_update> 严格 JSON 数组；trigger_time 必须换算成明确游戏时间 YYYY-MM-DD HH:mm，字段必须包含 action、name、trigger_time、people、event、reminder；不要写自然语言格式，不要把约定记录写进 <maintext>。',
-      '如果角色出现可重复、可成长、可被主角感知的习惯、职责、技能流程或长期互动倾向，请在正文后输出 <character_behavior_update>...</character_behavior_update> 严格 JSON 数组；字段包含 action、character、region、behavior、trigger、source、protagonist_feel；只允许 learn/remove/update；不要记录一次性动作，不要用它创建新区域。',
+      [
+        '如果配角在某个酒馆区域学会、承担或表现出以后可反复做的后台小动作，请在正文后输出 <character_behavior_update>...</character_behavior_update> 严格 JSON 数组。',
+        '这个块用于维护“每个配角自己的伪活人化行为池”：让不在主角当前镜头里的配角以后也能被前端随机安排事情做。',
+        '只写短行为词或短行为组，例如“擦桌”“摆椅”“看锅”“收杯”“整理床铺”；不要写长总结、心理成长、主角感受或完整句子。',
+        '如果只是一次性动作、临时情绪、普通路过、偶然帮忙、路人行为、或没有可重复价值，则不要输出这个块。',
+        'region 必须使用当前已经存在的酒馆区域名；不能确定时写空字符串。这个块不创建新人物、不创建新区域、不替代 MVU 变量。',
+        '完整格式示例：<character_behavior_update>[{"action":"learn","character":"橘柒","region":"主厅接待区","behaviors":["擦桌","摆椅","收杯"]}]</character_behavior_update>',
+        'action 只允许 learn/remove/update；character 写角色正式姓名；优先使用 behaviors 数组，每个行为控制在 2-8 个字。',
+      ].join('\n'),
       needsShop ? '本回合要求生成商铺时，必须在 <maintext> 后输出 <shop>...</shop>。' : '',
       needsCraft ? '本回合要求生成制作结果时，必须在 <maintext> 后输出 <craft_result>...</craft_result>。' : '',
       needsGuestUpdate ? '本回合若新增客人、点单、上菜反馈或客人离开，请在正文后输出 <guest_update>...</guest_update> JSON 数组，供前端服务托盘读取。' : '',
@@ -5273,7 +5286,7 @@ export const useGameStore = defineStore('primordia', () => {
           好感: heroine.affection,
           心情: heroine.mood,
           所在位置: heroine.located,
-          一句话穿着: heroine.outfit || '衣着暂未记录。',
+          一句话穿着: heroine.outfit || '',
           生命: { 当前值: heroine.hp, 上限: heroine.hpMax },
           精力: { 当前值: heroine.energy, 上限: heroine.energyMax },
           膀胱: { 当前值: heroine.bladder, 上限: heroine.bladderMax },
@@ -6988,6 +7001,12 @@ export const useGameStore = defineStore('primordia', () => {
       const record = asRecord(raw);
       const rawName = String(readFirstPath(record, ['姓名', '名称', 'name'], key) || key).trim();
       if (!rawName || heroines.value.some(heroine => heroine.name === rawName || heroine.id === key)) return;
+      const raceText = String(readFirstPath(record, ['种族', 'race'], '') || '').trim();
+      const titleText = String(readFirstPath(record, ['身份', '称号', 'title'], '') || '').trim();
+      const locatedText = String(readFirstPath(record, ['所在位置', '位置', 'located'], '') || '').trim();
+      const outfitText = String(readFirstPath(record, ['一句话穿着', '穿着', 'outfit'], '') || '').trim();
+      const hasEnoughIdentity = Boolean(raceText && titleText && (locatedText || outfitText));
+      if (!hasEnoughIdentity) return;
       const stage = normalizeStage(readNumberPath(record, ['羁绊阶段', '阶段', 'stage'], 1), 1);
       const hpMax = readGaugeMax(record, '生命', 100);
       const energyMax = readGaugeMax(record, '精力', 100);
@@ -6996,8 +7015,8 @@ export const useGameStore = defineStore('primordia', () => {
       heroines.value.push({
         id: slugId(rawName || key, `heroine-${heroines.value.length + 1}`),
         name: rawName,
-        race: String(readFirstPath(record, ['种族', 'race'], '人类') || '人类'),
-        title: String(readFirstPath(record, ['身份', '称号', 'title'], '同伴') || '同伴'),
+        race: raceText,
+        title: titleText,
         stage,
         stageName: String(readFirstPath(record, ['阶段文字', '阶段名', 'stageName'], stageNameFromStage(stage)) || stageNameFromStage(stage)),
         hp: Math.max(0, Math.min(hpMax, Math.floor(readGauge(record, '生命', hpMax)))),
@@ -7010,11 +7029,11 @@ export const useGameStore = defineStore('primordia', () => {
         affectionMax,
         isMain: true,
         mood: String(readFirstPath(record, ['心情', '状态', 'mood'], '平静') || '平静'),
-        located: normalizeScenePlaceName(String(readFirstPath(record, ['所在位置', '位置', 'located'], location.place) || location.place)) || location.place,
-        outfit: String(readFirstPath(record, ['一句话穿着', '穿着', 'outfit'], '衣着暂未记录。') || '衣着暂未记录。'),
+        located: normalizeScenePlaceName(locatedText || location.place) || location.place,
+        outfit: outfitText,
         gift: String(readFirstPath(record, ['偏好礼物', '礼物', 'gift'], '') || ''),
         portraitColor: heroinePortraitColors[index % heroinePortraitColors.length],
-        bio: String(readFirstPath(record, ['备注', '描述', 'bio'], `${rawName}的资料来自 MVU 人物羁绊变量。`) || ''),
+        bio: String(readFirstPath(record, ['备注', '描述', 'bio'], '') || ''),
       });
       changed = true;
     });
@@ -7672,6 +7691,7 @@ export const useGameStore = defineStore('primordia', () => {
       characterId: heroine.id,
       region: String(input.region ?? heroine.located ?? '').trim(),
       behavior,
+      behaviors: [behavior],
       trigger: String(input.trigger ?? 'manual').trim(),
       source: String(input.source ?? '玩家手动维护').trim(),
       protagonistFeel: String(input.protagonistFeel ?? '').trim(),

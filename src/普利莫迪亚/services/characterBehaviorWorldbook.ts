@@ -56,6 +56,14 @@ function behaviorId(region: string, behavior: string) {
   return `behavior-${Math.abs(hash).toString(36)}`;
 }
 
+function normalizeBehaviorText(value: unknown) {
+  return cleanText(value)
+    .replace(/^[-*•\d.、\s]+/, '')
+    .replace(/[。.!！?？；;]+$/g, '')
+    .trim()
+    .slice(0, 18);
+}
+
 function normalizeCharacterName(name: string) {
   return cleanText(name).replace(/[\/:*?"<>|]/g, '').slice(0, 48) || '未命名角色';
 }
@@ -83,7 +91,7 @@ function normalizeBehaviorItem(value: unknown, fallbackRegion = ''): CharacterBe
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
   const region = cleanText(record.region ?? record['区域'] ?? fallbackRegion);
-  const behavior = cleanText(record.behavior ?? record['行为'] ?? record['习惯']);
+  const behavior = normalizeBehaviorText(record.behavior ?? record['行为'] ?? record['习惯']);
   if (!behavior) return null;
   return {
     id: cleanText(record.id) || behaviorId(region, behavior),
@@ -228,33 +236,40 @@ export function applyCharacterBehaviorUpdatesToLibrary(
 
   for (const update of updates) {
     const region = cleanText(update.region) || '未定位';
-    const item: CharacterBehaviorItem = {
-      id: behaviorId(region, update.behavior),
-      region,
-      behavior: cleanText(update.behavior),
-      trigger: cleanText(update.trigger) || 'observed',
-      source: cleanText(update.source),
-      protagonistFeel: cleanText(update.protagonistFeel),
-      learnedAtTurn: Math.max(0, turn),
-      updatedAt: Date.now(),
-    };
-    const targetList = validRegionSet.has(region) ? library.behaviors : library.unlocatedBehaviors;
+    const behaviorList = (update.behaviors?.length ? update.behaviors : [update.behavior])
+      .map(normalizeBehaviorText)
+      .filter(Boolean);
+    if (!behaviorList.length) continue;
 
-    if (update.action === 'remove') {
-      const didRemove = removeBehavior(library.behaviors, region, item.behavior) || removeBehavior(library.unlocatedBehaviors, region, item.behavior);
-      if (didRemove) {
-        changed = true;
-        removed += 1;
+    for (const behavior of behaviorList) {
+      const item: CharacterBehaviorItem = {
+        id: behaviorId(region, behavior),
+        region,
+        behavior,
+        trigger: cleanText(update.trigger) || 'observed',
+        source: cleanText(update.source),
+        protagonistFeel: cleanText(update.protagonistFeel),
+        learnedAtTurn: Math.max(0, turn),
+        updatedAt: Date.now(),
+      };
+      const targetList = validRegionSet.has(region) ? library.behaviors : library.unlocatedBehaviors;
+
+      if (update.action === 'remove') {
+        const didRemove = removeBehavior(library.behaviors, region, item.behavior) || removeBehavior(library.unlocatedBehaviors, region, item.behavior);
+        if (didRemove) {
+          changed = true;
+          removed += 1;
+        }
+        continue;
       }
-      continue;
-    }
 
-    upsertBehavior(targetList, item);
-    changed = true;
-    learned += 1;
-    if (!validRegionSet.has(region)) {
-      unlocated += 1;
-      ignoredUnknownRegion.push(region);
+      upsertBehavior(targetList, item);
+      changed = true;
+      learned += 1;
+      if (!validRegionSet.has(region)) {
+        unlocated += 1;
+        ignoredUnknownRegion.push(region);
+      }
     }
   }
 

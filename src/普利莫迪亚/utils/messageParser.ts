@@ -83,6 +83,7 @@ export interface ParsedCharacterBehaviorUpdate {
   characterId?: string;
   region: string;
   behavior: string;
+  behaviors: string[];
   trigger: string;
   source: string;
   protagonistFeel: string;
@@ -321,6 +322,24 @@ function readJsonFirstString(record: Record<string, any>, keys: string[]): strin
     if (text) return text;
   }
   return '';
+}
+
+function readJsonStringList(record: Record<string, any>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      const list = value.map(readJsonString).filter(Boolean);
+      if (list.length) return list;
+    }
+    const text = readJsonString(value);
+    if (text) {
+      return text
+        .split(/[、,，/]/)
+        .map(item => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
 }
 
 function readJsonTags(value: unknown): string[] {
@@ -711,7 +730,8 @@ function normalizeCharacterBehaviorUpdate(value: unknown): ParsedCharacterBehavi
   const character = readJsonFirstString(record, ['character', 'characterName', 'name', '角色', '人物', '角色名']);
   const characterId = readJsonFirstString(record, ['character_id', 'characterId', 'id', '角色id', '角色ID']);
   const region = readJsonFirstString(record, ['region', 'area', 'location', '区域', '地点']);
-  const behavior = readJsonFirstString(record, ['behavior', '行为', '习惯', '内容']);
+  const behaviors = readJsonStringList(record, ['behaviors', 'behaviorList', '行为列表', '行为组', 'behavior', '行为', '习惯', '内容']);
+  const behavior = behaviors[0] ?? '';
   const trigger = readJsonFirstString(record, ['trigger', '触发', '触发方式']) || 'observed';
   const source = readJsonFirstString(record, ['source', '来源', '依据']);
   const protagonistFeel = readJsonFirstString(record, ['protagonist_feel', 'protagonistFeel', '主角感受', '主角可感受到']);
@@ -725,6 +745,7 @@ function normalizeCharacterBehaviorUpdate(value: unknown): ParsedCharacterBehavi
     ...(characterId ? { characterId } : {}),
     region,
     behavior,
+    behaviors,
     trigger,
     source,
     protagonistFeel,
