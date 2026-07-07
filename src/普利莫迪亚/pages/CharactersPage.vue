@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { formatCopper, useGameStore, type Heroine } from '../stores/game';
+import { formatCopper, useGameStore, type Heroine, type TemporaryStateDisplay } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 import {
   canCreateWorldbookEntry,
@@ -28,6 +28,8 @@ const selectedId = computed({
 const selected = computed(() => visibleHeroines.value.find(h => h.id === selectedId.value) ?? visibleHeroines.value[0] ?? null);
 const selectedWorldbookBindings = computed(() => (selected.value ? (game.characterWorldbookBindings[selected.value.id] ?? []) : []));
 const selectedBehaviorLibrary = computed(() => (selected.value ? game.characterBehaviorLibraries[selected.value.id] ?? null : null));
+const pendingCharacterDelete = ref<Heroine | null>(null);
+const pendingBehaviorDelete = ref<{ id: string; behavior: string } | null>(null);
 const cgRatingTab = ref<'sfw' | 'nsfw'>('sfw');
 const selectedBehaviorGroups = computed(() => {
   const library = selectedBehaviorLibrary.value;
@@ -56,6 +58,10 @@ const selectedCgCounts = computed(() => ({
   sfw: selectedCgSlots.value.filter(item => (item.rating ?? 'sfw') === 'sfw').length,
   nsfw: selectedCgSlots.value.filter(item => item.rating === 'nsfw').length,
 }));
+
+function temporaryStatesForHeroine(h: Heroine): TemporaryStateDisplay[] {
+  return game.flattenTemporaryStates().filter(state => state.targetType === '人物' && state.targetName === h.name);
+}
 
 watch(selectedId, () => {
   cgRatingTab.value = 'sfw';
@@ -111,9 +117,14 @@ async function sendGift(item: '橙皮陈酿' | '泥金蜂蜜小罐' | '银烛台
 }
 
 async function deleteCharacter(h: Heroine) {
-  if (!window.confirm(`确定删除配角「${h.name}」吗？这会从当前变量和人物羁绊列表里移除。`)) return;
-  if (!window.confirm(`再次确认删除「${h.name}」？删除后会同步移除她的世界书绑定和行为库缓存。`)) return;
-  await game.deleteHeroine(h.id);
+  pendingCharacterDelete.value = h;
+}
+
+async function confirmDeleteCharacter() {
+  const target = pendingCharacterDelete.value;
+  if (!target) return;
+  pendingCharacterDelete.value = null;
+  await game.deleteHeroine(target.id);
 }
 
 const memoryOpen = ref(false);
@@ -244,8 +255,19 @@ async function editBehaviorLibraryItem(item: { id: string; behavior: string; reg
 
 async function deleteBehaviorLibraryItem(item: { id: string; behavior: string }) {
   if (!selected.value) return;
-  if (!window.confirm(`删除这条行为记忆吗？\n${item.behavior}`)) return;
-  await game.deleteCharacterBehavior(selected.value.id, item.id);
+  pendingBehaviorDelete.value = item;
+}
+
+async function confirmDeleteBehaviorLibraryItem() {
+  if (!selected.value || !pendingBehaviorDelete.value) return;
+  const target = pendingBehaviorDelete.value;
+  pendingBehaviorDelete.value = null;
+  await game.deleteCharacterBehavior(selected.value.id, target.id);
+}
+
+function closeDeleteConfirm() {
+  pendingCharacterDelete.value = null;
+  pendingBehaviorDelete.value = null;
 }
 
 function entryKeysText(entry: EditableWorldbookEntry | null) {
@@ -476,6 +498,17 @@ async function createWorldbookEntryForSelected() {
             <p><b>备注</b>{{ h.bio || '暂无备注。' }}</p>
           </div>
 
+          <div v-if="temporaryStatesForHeroine(h).length" class="char-temp-states">
+            <span
+              v-for="state in temporaryStatesForHeroine(h)"
+              :key="`${h.id}-${state.名称}-${state.描述}`"
+              class="pm-tag gold"
+              :title="state.描述"
+            >
+              {{ state.名称 }} · {{ state.剩余回合 }}回合
+            </span>
+          </div>
+
           <footer class="char-acts">
             <button class="pm-btn sm" @click.stop="startChat(h)">
               <PmIcon name="chat" :size="12" /> 发起交谈
@@ -506,6 +539,16 @@ async function createWorldbookEntryForSelected() {
               <span><b>心情</b>{{ selected.mood }}</span>
               <span><b>所在位置</b>{{ selected.located }}</span>
               <span><b>一句话穿着</b>{{ selected.outfit || '衣着暂未记录。' }}</span>
+            </div>
+            <div v-if="temporaryStatesForHeroine(selected).length" class="selected-temp-states">
+              <span
+                v-for="state in temporaryStatesForHeroine(selected)"
+                :key="`${selected.id}-${state.名称}-${state.描述}`"
+                class="pm-tag gold"
+                :title="state.描述"
+              >
+                {{ state.名称 }} · {{ state.剩余回合 }}回合
+              </span>
             </div>
             <ol class="stage-list">
               <li
@@ -870,6 +913,38 @@ async function createWorldbookEntryForSelected() {
         </div>
       </div>
     </Teleport>
+
+    <Teleport to="body">
+      <div v-if="pendingCharacterDelete || pendingBehaviorDelete" class="pm-modal-mask" @click.self="closeDeleteConfirm">
+        <div class="pm-modal delete-confirm-modal">
+          <header class="pm-modal-head">
+            <h3><PmIcon name="x" :size="16" /> 确认删除</h3>
+            <button class="pm-link" @click="closeDeleteConfirm"><PmIcon name="x" :size="16" /></button>
+          </header>
+          <div class="pm-modal-body">
+            <template v-if="pendingCharacterDelete">
+              <p>删除配角「{{ pendingCharacterDelete.name }}」吗？</p>
+              <p class="pm-dim">
+                这会从当前变量和人物羁绊列表里移除，并同步清理她的世界书绑定和行为库缓存。
+              </p>
+            </template>
+            <template v-else-if="pendingBehaviorDelete">
+              <p>删除这条行为记忆吗？</p>
+              <p class="pm-dim">{{ pendingBehaviorDelete.behavior }}</p>
+            </template>
+          </div>
+          <footer class="pm-modal-foot">
+            <button class="pm-btn ghost" @click="closeDeleteConfirm">取消</button>
+            <button
+              class="pm-btn danger"
+              @click="pendingCharacterDelete ? confirmDeleteCharacter() : confirmDeleteBehaviorLibraryItem()"
+            >
+              删除
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -1016,6 +1091,11 @@ async function createWorldbookEntryForSelected() {
   font-family: var(--pm-font-display);
   font-size: calc(11px * var(--pm-text-scale));
 }
+.char-temp-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .char-acts {
   display: flex;
   flex-wrap: wrap;
@@ -1069,6 +1149,12 @@ async function createWorldbookEntryForSelected() {
 .selected-fields b {
   color: var(--pm-ink-dim);
   font-family: var(--pm-font-display);
+}
+.selected-temp-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -3px 0 10px;
 }
 .stage-list {
   list-style: none;
@@ -1432,6 +1518,17 @@ async function createWorldbookEntryForSelected() {
 .pm-modal.wide {
   width: min(820px, 100%);
 }
+.delete-confirm-modal {
+  width: min(430px, 100%);
+}
+.delete-confirm-modal .pm-modal-body {
+  display: grid;
+  gap: 8px;
+  line-height: 1.7;
+}
+.delete-confirm-modal .pm-modal-body p {
+  margin: 0;
+}
 .cg-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1493,4 +1590,3 @@ async function createWorldbookEntryForSelected() {
   }
 }
 </style>
-

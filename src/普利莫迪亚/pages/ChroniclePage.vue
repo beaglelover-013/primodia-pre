@@ -17,6 +17,7 @@ import {
   parseNarrativeMvuMessage,
   runUnifiedNarrativeRequest as runNarrativeRequest,
 } from '../utils/unifiedRequest';
+import { writePrimordiaStatData } from '../services/mvuDataBridge';
 
 const game = useGameStore();
 const latestMessage = ref<LatestMaintextPayload>({ maintext: '', options: [], sum: '' });
@@ -31,6 +32,8 @@ const contextMenu = ref<{ x: number; y: number } | null>(null);
 const turnActionOpen = ref(false);
 const turnActionText = ref('');
 const turnActionError = ref('');
+const visibleTurnActionMessageId = ref<number | undefined>(undefined);
+const pendingTurnActionMessageId = ref<number | undefined>(undefined);
 const editingMessage = ref<{
   messageId: number;
   currentText: string;
@@ -44,8 +47,8 @@ const editingTurnAction = ref<{
 } | null>(null);
 let longPressTimer: number | null = null;
 let messageEventStops: EventOnReturn[] = [];
-let storyUpdatedStop: (() => void) | undefined;
 let storyStreamingStop: (() => void) | undefined;
+let storyUpdatedStop: (() => void) | undefined;
 
 const hasMaintext = computed(() => latestMessage.value.maintext.trim().length > 0);
 const storyParagraphs = computed(() =>
@@ -59,6 +62,11 @@ const chapterMark = computed(() =>
   latestMessage.value.messageId === undefined ? '' : `楼层 #${latestMessage.value.messageId}`,
 );
 const isViewingLoadedLayer = computed(() => pendingLoadMessageId.value !== null);
+const isPendingTurnAction = computed(
+  () =>
+    hasMessageId(pendingTurnActionMessageId.value) &&
+    (!hasMessageId(latestMessage.value.messageId) || pendingTurnActionMessageId.value > latestMessage.value.messageId),
+);
 const readerItems = computed(() => [...storyIndex.value].reverse());
 const loadItems = computed(() => [...storyIndex.value].reverse());
 const promiseTaskItems = computed(() =>
@@ -113,6 +121,7 @@ function refreshMaintext(options: { keepLoadedView?: boolean } = {}) {
       pendingLoadMessageId.value = game.loadedStoryCheckpoint.messageId;
     }
     storyIndex.value = loadAssistantStoryIndex();
+    refreshTurnAction();
     return;
   }
   latestMessage.value = loadLatestAssistantMaintext();
@@ -121,6 +130,7 @@ function refreshMaintext(options: { keepLoadedView?: boolean } = {}) {
   game.setLoadedStoryCheckpoint(null);
   showOptions.value = false;
   contextMenu.value = null;
+  refreshTurnAction();
 }
 
 function restoreLoadedPreview() {
@@ -162,10 +172,36 @@ function readUserMessageText(userMessageId?: number) {
   }
 }
 
+function readLatestUserMessageAfter(messageId?: number): { messageId: number; text: string } | null {
+  if (!hasMessageId(messageId) || typeof getLastMessageId !== 'function' || typeof getChatMessages !== 'function') return null;
+  const lastMessageId = getLastMessageId();
+  if (lastMessageId <= messageId) return null;
+  try {
+    const userMessages = [
+      ...(getChatMessages(`${messageId + 1}-${lastMessageId}`, { role: 'user', hide_state: 'all' }) ?? []),
+      ...(getChatMessages(`${messageId + 1}-${lastMessageId}`, { role: 'user' }) ?? []),
+    ]
+      .filter(message => typeof message?.message_id === 'number' && message.message_id > messageId)
+      .sort((a, b) => a.message_id - b.message_id);
+    const latestUser = userMessages.at(-1);
+    if (!latestUser) return null;
+    const text = readUserMessageText(latestUser.message_id);
+    return text ? { messageId: latestUser.message_id, text } : null;
+  } catch {
+    return null;
+  }
+}
+
 function refreshTurnAction() {
-  const userMessageId = latestMessage.value.userMessageId;
-  turnActionText.value = readUserMessageText(userMessageId);
+  const pendingUser = readLatestUserMessageAfter(latestMessage.value.messageId);
+  const userMessageId = pendingUser?.messageId ?? latestMessage.value.userMessageId;
+  const text = pendingUser?.text ?? readUserMessageText(userMessageId);
+  const previousPendingId = pendingTurnActionMessageId.value;
+  visibleTurnActionMessageId.value = userMessageId;
+  pendingTurnActionMessageId.value = pendingUser?.messageId;
+  turnActionText.value = text;
   turnActionError.value = hasMessageId(userMessageId) && !turnActionText.value ? '未找到本回合行动记录。' : '';
+  if (pendingUser && previousPendingId !== pendingUser.messageId) turnActionOpen.value = true;
   if (!turnActionText.value) turnActionOpen.value = false;
 }
 
@@ -235,7 +271,7 @@ async function ensureLoadedBranchForAction(): Promise<boolean> {
   return true;
 }
 
-async function regenerateLatest() {
+async function regenerateLatest(options: { authoritativeMessageId?: number } = {}) {
   const messageId = latestMessage.value.messageId;
   const userMessageId = latestMessage.value.userMessageId;
   if (!hasMessageId(messageId) || !hasMessageId(userMessageId)) {
@@ -255,20 +291,16 @@ async function regenerateLatest() {
       (/自由行动造成的库存、状态或地点变化|若行动自然影响库存/.test(userText) && !userText.includes('前端已结算:'));
     const result = await runNarrativeRequest(userText, {
       createUserMessage: false,
-      authoritativeData: game.buildFrontendMvuSnapshot(),
+      authoritativeData: game.getAuthoritativeMvuData(options.authoritativeMessageId ?? userMessageId),
       turnContextWorldbookBinding: game.turnContextWorldbookBinding,
       worldbookScanText: game.buildWorldbookScanPreview(),
+      enableStreamingMaintext: false,
       preserveNarrativeScene: canPreserveScene,
       onTurnContextWorldbookWritten: binding => {
         game.turnContextWorldbookBinding = { ...binding };
         game.turnContextWorldbookStatus = `最近写入：${new Date(binding.updatedAt ?? Date.now()).toLocaleString()} · ${binding.worldbookName} · uid ${binding.uid}`;
         game.pushLog('系统', '重 roll 已重新写入本回合发送包世界书。');
       },
-      onStreamingMaintext: game.streamMaintext
-        ? text => {
-            latestMessage.value = { maintext: text, options: [], sum: latestMessage.value.sum };
-          }
-        : undefined,
     });
     if (!result.ok) throw new Error(result.error ?? '重新生成失败。');
     if (
@@ -294,8 +326,8 @@ async function regenerateLatest() {
 }
 
 function openEditTurnAction() {
-  const userMessageId = latestMessage.value.userMessageId;
-  if (isViewingLoadedLayer.value) {
+  const userMessageId = visibleTurnActionMessageId.value ?? latestMessage.value.userMessageId;
+  if (false && isViewingLoadedLayer.value) {
     game.pushLog('系统', '旧楼层只能查看本回合行动，不能直接编辑重发。');
     return;
   }
@@ -323,7 +355,13 @@ async function saveTurnActionAndRegenerate() {
     game.isGenerating = true;
     await writeUserMessageText(editing.userMessageId, nextText, 'none');
     editingTurnAction.value = null;
-    const regenerated = await regenerateLatest();
+    const canContinue = await ensureLoadedBranchForAction();
+    if (!canContinue) {
+      await writeUserMessageText(editing.userMessageId, editing.originalText, 'none');
+      refreshTurnAction();
+      return;
+    }
+    const regenerated = await regenerateLatest({ authoritativeMessageId: editing.userMessageId });
     if (!regenerated) {
       await writeUserMessageText(editing.userMessageId, editing.originalText, 'none');
       refreshTurnAction();
@@ -386,11 +424,9 @@ async function saveEditingMessage() {
           );
     await setChatMessages([{ message_id: editing.messageId, message: updatedMessage }], { refresh: 'affected' });
     if (editing.mode === 'all') {
-      const parsed = await parseNarrativeMvuMessage(updatedMessage, game.buildFrontendMvuSnapshot());
+      const parsed = await parseNarrativeMvuMessage(updatedMessage, game.getAuthoritativeMvuData(editing.messageId));
       game.applyMvuStatData(parsed.mvuData, { restoreInventory: true });
-      if (typeof Mvu !== 'undefined' && typeof Mvu.replaceMvuData === 'function') {
-        await Mvu.replaceMvuData(parsed.mvuData, { type: 'message', message_id: editing.messageId });
-      }
+      await writePrimordiaStatData(parsed.mvuData, { type: 'message', message_id: editing.messageId });
       parsed.latest.messageId = editing.messageId;
       await game.writeChatSave(parsed.latest);
     }
@@ -483,21 +519,24 @@ onMounted(() => {
     game.setLoadedStoryCheckpoint(null);
     latestMessage.value = payload;
     storyIndex.value = loadAssistantStoryIndex();
+    refreshTurnAction();
     showOptions.value = false;
   });
   storyStreamingStop = onPrimordiaStoryStreaming(maintext => {
-    if (!game.streamMaintext || !game.isGenerating || !maintext.trim()) return;
+    if (!game.enableStoryStreaming || !game.isGenerating || pendingLoadMessageId.value !== null) return;
+    const text = maintext.trim();
+    if (!text) return;
     latestMessage.value = {
       ...latestMessage.value,
-      maintext,
+      maintext: text,
       options: [],
     };
     showOptions.value = false;
   });
-
   if (typeof eventOn !== 'function' || typeof tavern_events === 'undefined') return;
 
   messageEventStops = [
+    eventOn(tavern_events.USER_MESSAGE_RENDERED, () => refreshTurnAction()),
     eventOn(tavern_events.MESSAGE_RECEIVED, () => refreshMaintext({ keepLoadedView: true })),
     eventOn(tavern_events.MESSAGE_UPDATED, () => refreshMaintext({ keepLoadedView: true })),
     eventOn(tavern_events.MESSAGE_EDITED, () => refreshMaintext({ keepLoadedView: true })),
@@ -575,15 +614,15 @@ watch(
               <PmIcon name="scroll" :size="15" />
               本回合行动
             </span>
-            <small>{{ turnActionText ? (turnActionOpen ? '收起' : '展开') : '未记录' }}</small>
+            <small>{{ turnActionText ? (isPendingTurnAction ? '等待正文' : turnActionOpen ? '收起' : '展开') : '未记录' }}</small>
           </button>
           <div v-if="turnActionOpen" class="turn-action-body">
             <p v-if="turnActionText">{{ turnActionText }}</p>
             <p v-else class="turn-action-empty">{{ turnActionError || '未找到本回合行动记录。' }}</p>
             <div v-if="turnActionText" class="turn-action-tools">
               <button type="button" @click="copyTextToClipboard(turnActionText)">复制</button>
-              <button type="button" :disabled="game.isGenerating || isViewingLoadedLayer" @click="openEditTurnAction">
-                {{ isViewingLoadedLayer ? '旧楼层不可编辑' : '编辑后重发' }}
+              <button type="button" :disabled="game.isGenerating || isViewingLoadedLayer || isPendingTurnAction" @click="openEditTurnAction">
+                {{ isViewingLoadedLayer || isPendingTurnAction ? '当前不可编辑' : '编辑后重发' }}
               </button>
             </div>
           </div>

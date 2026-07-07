@@ -106,13 +106,16 @@ function add(p: ShopProduct) {
     game.pushLog('提示', `${p.name} 只剩 ${p.stock} 件。`);
     return;
   }
-  cart.value[p.id] = (cart.value[p.id] ?? 0) + 1;
+  cart.value = { ...cart.value, [p.id]: (cart.value[p.id] ?? 0) + 1 };
 }
 
 function dec(p: ShopProduct) {
   if (!cart.value[p.id]) return;
-  cart.value[p.id] -= 1;
-  if (cart.value[p.id] <= 0) delete cart.value[p.id];
+  const nextQty = cart.value[p.id] - 1;
+  const nextCart = { ...cart.value };
+  if (nextQty <= 0) delete nextCart[p.id];
+  else nextCart[p.id] = nextQty;
+  cart.value = nextCart;
 }
 
 async function checkout() {

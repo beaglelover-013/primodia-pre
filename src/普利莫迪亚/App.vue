@@ -5,9 +5,9 @@ import TopHud from './components/TopHud.vue';
 import Sidebar from './components/Sidebar.vue';
 import BottomDock from './components/BottomDock.vue';
 import PmIcon from './components/PmIcon.vue';
-import OpeningWorkshop from './components/OpeningWorkshop.vue';
 import ServiceTray from './components/ServiceTray.vue';
 
+import OpeningSelectPage from './pages/OpeningSelectPage.vue';
 import ChroniclePage from './pages/ChroniclePage.vue';
 import TavernPage from './pages/TavernPage.vue';
 import ProtagonistPage from './pages/ProtagonistPage.vue';
@@ -242,6 +242,8 @@ onUnmounted(() => {
 
 const tabComponent = computed(() => {
   switch (game.currentTab) {
+    case 'opening':
+      return OpeningSelectPage;
     case 'chronicle':
       return ChroniclePage;
     case 'tavern':
@@ -276,6 +278,7 @@ const tabComponent = computed(() => {
 const tabTitle = computed(
   () =>
     ({
+      opening: '开场选择',
       chronicle: '编年录 · 正文',
       tavern: '酒馆 · 八区域',
       protagonist: '主角档案',
@@ -348,8 +351,7 @@ const tabTitle = computed(
       <BottomDock />
     </div>
 
-    <ServiceTray v-if="!game.shouldShowOpeningWorkshop" />
-    <OpeningWorkshop v-if="game.shouldShowOpeningWorkshop" />
+    <ServiceTray />
   </div>
 </template>
 

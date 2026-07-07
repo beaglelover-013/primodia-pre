@@ -126,7 +126,6 @@ export interface OpeningTemplateStatus {
 }
 
 export interface OpeningWorldbookResult {
-  entry: EditableWorldbookEntry;
   characterEntry: EditableWorldbookEntry;
   tavernEntry: EditableWorldbookEntry;
   turnContextEntry: EditableWorldbookEntry;
@@ -1301,24 +1300,7 @@ export async function resetOpeningProfileEntries(worldbookName: string) {
       enabled: false,
     },
   );
-  const gameInfoEntry = await upsertWorldbookEntryByName(
-    targetWorldbook,
-    OPENING_GAME_INFO_ENTRY,
-    {
-      enabled: false,
-      name: OPENING_GAME_INFO_ENTRY,
-      comment: OPENING_GAME_INFO_ENTRY,
-      content: '<PrimordiaGameInfo status="pending">\n本次开局游戏信息待最终确认后写入。\n</PrimordiaGameInfo>',
-      strategy: {
-        type: 'constant',
-        keys: ['普利莫迪亚', '游戏信息'],
-        keys_secondary: { logic: 'and_any', keys: [] },
-        scan_depth: 'same_as_global',
-      },
-      position: { type: 'at_depth', role: 'system', depth: 4, order: 80 },
-    },
-  );
-  return { characterEntry, tavernEntry, gameInfoEntry };
+  return { characterEntry, tavernEntry };
 }
 
 function buildRegionOpeningBlock(draft: OpeningWorkshopDraft, bundle: OpeningGenerationBundle, regionEntryName: string) {
@@ -1365,17 +1347,6 @@ export async function writeOpeningWorldbook(
     ['普利莫迪亚', '开局酒馆档案'],
     75,
   );
-  const gameInfoSeed: Partial<EditableWorldbookEntry> = {
-    enabled: true,
-    content: buildGameInfoWorldbookContent(draft, bundle),
-    strategy: {
-      type: 'constant',
-      keys: ['普利莫迪亚', '游戏信息'],
-      keys_secondary: { logic: 'and_any', keys: [] },
-      scan_depth: 'same_as_global',
-    },
-    position: { type: 'at_depth', role: 'system', depth: 4, order: 80 },
-  };
   const turnContextSeed: Partial<EditableWorldbookEntry> = {
     enabled: true,
     content: [
@@ -1397,7 +1368,6 @@ export async function writeOpeningWorldbook(
   const missingRequiredEntries = [
     { name: OPENING_CHARACTER_ENTRY, seed: characterSeed },
     { name: OPENING_TAVERN_ENTRY, seed: tavernSeed },
-    { name: OPENING_GAME_INFO_ENTRY, seed: gameInfoSeed },
     { name: TURN_CONTEXT_WORLDBOOK_ENTRY_NAME, seed: turnContextSeed },
   ].filter(item => findEntryIndex(item.name) < 0);
 
@@ -1435,7 +1405,6 @@ export async function writeOpeningWorldbook(
 
   const characterEntry = upsertInMemory(OPENING_CHARACTER_ENTRY, characterSeed);
   const tavernEntry = upsertInMemory(OPENING_TAVERN_ENTRY, tavernSeed);
-  const entry = upsertInMemory(OPENING_GAME_INFO_ENTRY, gameInfoSeed);
   const turnContextEntry = upsertInMemory(TURN_CONTEXT_WORLDBOOK_ENTRY_NAME, turnContextSeed);
 
   const templateResults = [];
@@ -1493,7 +1462,6 @@ export async function writeOpeningWorldbook(
   }
 
   return {
-    entry,
     characterEntry,
     tavernEntry,
     turnContextEntry,
@@ -1585,53 +1553,97 @@ export function buildFixedOpeningPreset(worldbookName = ''): {
     moduleChoices: [],
   };
 
-  const fixedRegions = {
-    主厅接待区: {
-      状态: '冷清，刚有人进门',
-      风格: '壁炉、长桌、接待核心',
-      描述: '六张木桌散落在前厅，旧木柜台架在两个酒桶上，桌椅有些破旧但仍能使用。',
-      设施: ['六张木桌', '旧木柜台', '陶杯架', '半满酒桶'],
-    },
-    柜台酒水区: {
-      状态: '少年老板刚从发呆中回神',
-      风格: '旧木柜台与便宜麦酒',
-      描述: '厚实旧木板架在两个酒桶上，后面摆着陶杯和两只半满酒桶。这里负责点单、倒酒、收钱，也最先承接客人的询问。',
-      设施: ['旧木柜台', '陶杯', '半满酒桶', '简陋账本'],
-    },
-    厨房餐食区: {
-      状态: '有灶台余温',
-      风格: '灶台余温与谷物焦甜气',
-      描述: '布帘半掩，里面传出极微弱的咕嘟声，空气里有谷物煮过头后的焦甜气。',
-      设施: ['灶台', '铁锅', '布帘'],
-    },
-    客房: {
-      状态: '空着，能勉强住人',
-      风格: '简陋旅人小房',
-      描述: '楼上几间小客房还没有住客，床铺和粗布被褥都偏旧，但能遮风，适合给旅人或临时帮工将就过夜。',
-      设施: ['粗布床铺', '旧木梁', '薄被褥'],
-    },
-  };
-
   const initvar = {
     世界: {
       时代: '共栖历1303年',
       地区: '韦斯托利亚',
-      当前历法: { 年: 1303, 月份序号: 3, 月份名: '解冻月', 季节: '初春', 日: 1, 时段: '清晨', 时间: '07:10' },
+      当前历法: {
+        年: 1303,
+        月份序号: 3,
+        月份名: '解冻月',
+        季节: '初春',
+        日: 1,
+        天气: '初春薄雾，空气湿冷，泥路半干',
+        时间: '07:10',
+      },
       当前地点: { 区域: '布拉姆维克', 具体位置: '主厅接待区' },
-      天气: '初春薄雾，空气湿冷，泥路尚未干透。',
     },
     酒馆: {
       名称: '铁壶酒馆',
       所属领地: '韦斯托利亚',
       所在城市: '布拉姆维克',
-      今日营业状态: '准备营业',
-      整体概况: '铁壶酒馆冷清，刚开张，真正能用的是主厅接待区、柜台酒水区、厨房餐食区和几间简陋客房。门外是布拉姆维克村口半干不干的泥路，屋里还有些旧家具、灰尘和没完全清完的杂物，未来可以随着经营逐步整理出新的空间。',
+      声望: 0,
       资金: {
         随身钱袋: { 铜币: 0, 银币: 20, 金币: 0, 铂金币: 0, 秘银币: 0, 折算合计铜币: 2000 },
         钱匣: { 铜币: 0, 银币: 0, 金币: 0, 铂金币: 0, 秘银币: 0, 折算合计铜币: 0 },
+        铜币: 0,
+        银币: 20,
+        金币: 0,
+        铂金币: 0,
+        秘银币: 0,
         折算合计铜币: 2000,
       },
-      区域: fixedRegions,
+      今日营业状态: '准备营业',
+      整体概况: '铁壶酒馆冷清，真正能用的是主厅接待区、柜台酒水区、厨房餐食区和二楼几间简陋客房。门外是布拉姆维克村口半干不干的泥路，屋里还有些旧家具和没完全清完的杂物。村口告示牌上刻着"招人。包吃包住。酒馆问。"',
+      区域: {
+        主厅接待区: {
+          状态: '良好',
+          风格: '丘陵村口旧酒馆前厅',
+          描述:
+            '六张木桌散落在前厅，桌面擦过但没擦干净，靠窗那张的角落里还残着一圈干涸的水渍。椅子是粗木拼的，有几把缺了横档。地面是夯土铺了薄薄一层碎石。空气里弥漫着谷物煮过头后的焦甜气，混着陈年木头和铁锅锈气。',
+          分配员工: '',
+          设施: {
+            木桌: {
+              状态: '良好',
+              风格: '粗木拼桌',
+              描述: '六张散放木桌，桌面有使用痕迹',
+              价格折合铜币: 0,
+            },
+            旧木柜台: {
+              状态: '良好',
+              风格: '厚实旧木板架在两个酒桶上',
+              描述: '柜台后面的架子上摆着几个陶杯和两只半满酒桶',
+              价格折合铜币: 0,
+            },
+          },
+        },
+        柜台酒水区: {
+          状态: '良好',
+          风格: '旧木柜台与便宜麦酒',
+          描述: '厚实旧木板架在两个酒桶上，后面架子上摆着几个陶杯和两只半满酒桶。这里负责点单、倒酒、收钱。',
+          分配员工: '',
+          设施: {
+            旧木柜台: {
+              状态: '良好',
+              风格: '厚实旧木板',
+              描述: '柜台是一块厚实的旧木板架在两个酒桶上',
+              价格折合铜币: 0,
+            },
+          },
+        },
+        厨房餐食区: {
+          状态: '良好',
+          风格: '灶台余温与谷物焦甜气',
+          描述: '布帘半掩，里面传出极微弱的咕嘟声，空气里有谷物煮过头后的焦甜气，混着铁锅被烧热又冷却后特有的金属涩气。',
+          分配员工: '',
+          设施: {
+            灶台: {
+              状态: '良好',
+              风格: '砖石灶台',
+              描述: '灶台有余温，铁锅里在咕嘟着什么',
+              价格折合铜币: 0,
+            },
+          },
+        },
+        客房: {
+          状态: '良好',
+          风格: '简陋旅人小房',
+          描述: '二楼几间小客房还没有住客，床铺和粗布被褥都偏旧，但能遮风，适合给旅人或临时帮工将就过夜。',
+          分配员工: '',
+          设施: {},
+        },
+      },
+      客房: {},
     },
     主角: {
       姓名: '克斯',
@@ -1639,45 +1651,46 @@ export function buildFixedOpeningPreset(worldbookName = ''): {
       称号: '铁壶酒馆的少年老板',
       当前状态: '发呆中，被进门的应聘者打断',
       所在位置: '主厅接待区',
-      一句话穿着: '洗得发白的亚麻短袖衫、深棕色粗布短裤、旧围裙，赤脚站在柜台后。',
+      一句话穿着: '洗得发白的亚麻短袖衫、深棕色粗布短裤、旧围裙，赤脚。',
       生命: { 当前值: 100, 上限: 100 },
       精力: { 当前值: 100, 上限: 100 },
       烹饪等级: { 等级: 1, 称号: '烧火工', 做菜次数: 0, 下级所需次数: 10 },
     },
     库房: {
       食材: {
-        粗磨黑面包: { 数量: 4, 单位: '块', 标签: ['粗粮', '耐饥'] },
-        干豆子: { 数量: 6, 单位: '份', 标签: ['豆类', '耐储'] },
+        粗磨黑面包: { 数量: 4, 标签: ['粗粮', '耐饥'], 价格折合铜币: 2 },
+        干豆子: { 数量: 6, 标签: ['豆类', '耐储'], 价格折合铜币: 3 },
       },
-      调料: { 粗盐: { 数量: 3, 单位: '撮', 标签: ['基础调味'] } },
+      调料: { 粗盐: { 数量: 3, 标签: ['基础调味'], 价格折合铜币: 1 } },
       成品: {},
-      酒水: { 普通麦酒: { 数量: 2, 单位: '桶', 标签: ['苦涩', '便宜'] } },
+      酒水: { 普通麦酒: { 数量: 2, 标签: ['苦涩', '便宜'], 价格折合铜币: 80, 搭配判定: '无冲突' } },
       杂物: {
-        旧抹布: { 数量: 3, 单位: '条', 标签: ['清扫'] },
-        干木柴: { 数量: 8, 单位: '束', 标签: ['燃料'] },
+        旧抹布: { 数量: 3, 标签: ['清扫'], 价格折合铜币: 1 },
+        干木柴: { 数量: 8, 标签: ['燃料'], 价格折合铜币: 2 },
       },
     },
     行囊: { 食材: {}, 调料: {}, 成品: {}, 酒水: {}, 杂物: {} },
     临时状态: { 主角: [], 酒馆: [], 酒馆区域: {}, 人物: {} },
     人物羁绊: {
       橘柒: {
-        姓名: '橘柒',
         种族: '狐族',
         身份: '到店应聘者',
         羁绊阶段: 1,
-        阶段文字: '初识',
-        当前状态: '推门进店，询问招人告示是否还算数',
+        阶段文字: '陌生人',
+        好感: 0,
+        心情: '评估中，略带好奇',
         所在位置: '主厅接待区',
-        一句话穿着: '洗旧的绥和式斜襟窄袖短打上衣，宽松灯笼裤扎绑腿，兽爪半靴前端露出爪子和粉色肉垫，腰间系着磨边布袋。',
+        一句话穿着:
+          '起球的深灰色旧斗篷，洗旧的绥和式斜襟窄袖短打上衣，宽松灯笼裤扎绑腿，兽爪半靴前端露出爪子和粉色肉垫，腰间系着磨边布袋。',
         生命: { 当前值: 100, 上限: 100 },
         精力: { 当前值: 82, 上限: 100 },
         膀胱: { 当前值: 18, 上限: 100 },
-        好感: { 当前值: 0, 上限: 100 },
-        偏好礼物: '热食、住处、路费、和铁心脏有关的消息',
         备注:
-          '橘柒身高160cm出头，圆润脸颊带少女婴儿肥，琥珀色狐眼，橘棕色半长卷发用旧布绳松松扎着；头顶橘棕狐耳灵活如雷达，深橘渐变到奶白尾尖的大尾巴蓬松如云。她身上只有八枚铜板，离心心念念的“铁心脏”还有半个月路程，希望能在酒馆蹭两天吃住、攒点体力和路费。声音偏高不尖，懒洋洋拖腔，兴奋时语速变快。',
+          '橘柒身高160cm出头，圆润脸颊带少女婴儿肥，琥珀色狐眼，橘棕色半长卷发用旧布绳松松扎着；头顶橘棕狐耳灵活如雷达，深橘渐变到奶白尾尖的大尾巴蓬松如云。身上只有八枚铜板，离心心念念的"铁心脏"还有半个月路程，想在酒馆蹭两天吃住攒点路费。声音偏高不尖，懒洋洋拖腔。偏好：热食、住处、路费、和铁心脏有关的消息。',
       },
     },
+    农田与酒窖: { 农田: {}, 酒窖桶: {} },
+    街坊商铺: { 当前商铺: '', 商铺: {} },
   };
 
   return {

@@ -119,9 +119,14 @@ function isFrontendLoaderMessage(content: string) {
   return FRONTEND_LOADER_MESSAGE_PATTERN.test(content);
 }
 
+function isSeparatorOnlyStoryText(content: string) {
+  return content.replace(/[-—–_\s.。·・]+/g, '').length === 0;
+}
+
 function isUsableStoryText(content: string): boolean {
   if (isFrontendLoaderMessage(content)) return false;
-  return stripFrontendPlaceholders(content).replace(/\s+/g, '').length > 0;
+  const visible = stripFrontendPlaceholders(content).replace(/\s+/g, '').trim();
+  return visible.length > 0 && !isSeparatorOnlyStoryText(visible);
 }
 
 function hasExplicitStoryMarkup(content: string): boolean {

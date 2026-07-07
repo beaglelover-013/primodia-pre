@@ -29,7 +29,10 @@ const navGroups: NavGroup[] = [
     name: '编年录',
     icon: 'ledger',
     sub: '正文 · 选择 · 约定',
-    items: [{ id: 'chronicle', name: '编年录', icon: 'ledger', sub: '正文 · 选择', status: 'ready' }],
+    items: [
+      { id: 'opening', name: '开场选择', icon: 'ledger', sub: '三个开场 · 自由进入', status: 'ready' },
+      { id: 'chronicle', name: '编年录', icon: 'ledger', sub: '正文 · 选择', status: 'ready' },
+    ],
   },
   {
     id: 'tavern',

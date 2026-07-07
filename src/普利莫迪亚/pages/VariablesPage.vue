@@ -12,7 +12,7 @@ const editNotice = ref('');
 const selectedSection = ref('世界');
 const variableText = ref('');
 
-const snapshot = computed(() => game.buildFrontendMvuSnapshot(''));
+const snapshot = computed(() => game.getAuthoritativeMvuData());
 const topEntries = computed(() => Object.entries(snapshot.value));
 
 interface LeafEntry {

@@ -597,14 +597,14 @@ async function importSaveFile(event: Event) {
           </span>
           <button
             class="toggle-switch"
-            :class="{ on: game.streamMaintext }"
+            :class="{ on: game.enableStoryStreaming }"
             type="button"
             role="switch"
-            :aria-checked="game.streamMaintext"
-            @click="game.streamMaintext = !game.streamMaintext"
+            :aria-checked="game.enableStoryStreaming"
+            @click="game.enableStoryStreaming = !game.enableStoryStreaming"
           >
             <i></i>
-            {{ game.streamMaintext ? '开启' : '关闭' }}
+            {{ game.enableStoryStreaming ? '开启' : '关闭' }}
           </button>
         </label>
         <label class="toggle-row">
@@ -981,7 +981,7 @@ async function importSaveFile(event: Event) {
 
       <section v-show="activeSettingsSection === 'debug'" class="settings-card pm-card">
         <h3>调试操作</h3>
-        <p class="pm-dim">仅在开发阶段使用, 直接拨动变量观察叙事反应。</p>
+        <p class="pm-dim">仅在开发阶段使用。按钮会先调整前端状态，再写回当前楼层变量/MVU，便于观察叙事反应。</p>
         <div class="debug-grid">
           <button class="pm-btn sm" @click="game.dispatchAction({ type: 'DEBUG_CURRENCY', deltaCopper: 10_000, reason: '调试 · 注入资金' })">
             <PmIcon name="coin" :size="12" /> +100 银

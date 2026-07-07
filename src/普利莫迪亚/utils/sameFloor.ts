@@ -1,14 +1,16 @@
 const SAME_FLOOR_BODY_CLASS = 'primordia-same-floor-active';
 const SAME_FLOOR_STYLE_ID = 'primordia-same-floor-style';
-const BOOT_MESSAGE_ID = 0;
+const SAME_FLOOR_HOST_CLASS = 'primordia-ui-host-floor';
+const SAME_FLOOR_HOST_ATTR = 'data-primordia-ui-host-message-id';
 const NATIVE_GENERATION_TIMEOUT_MS = 180_000;
-const FRONTEND_LOADER_PLACEHOLDER = '【普利莫迪亚前端加载脚本已在本次生成前临时屏蔽。】';
 
 export interface NativeNarrativeTurnOptions {
   createUserMessage?: boolean;
   userMessageData?: Record<string, any>;
   userMessageExtra?: Record<string, any>;
   onStreamingText?: (text: string) => void;
+  /** Compatibility flag; same-floor mode still sends through ST's native chain. */
+  forceGenerateStreaming?: boolean;
 }
 
 export interface NativeNarrativeTurnResult {
@@ -35,8 +37,45 @@ function getParentDocument(): Document | undefined {
   }
 }
 
-function hideDisplayedFloor(messageId: number) {
-  if (messageId === BOOT_MESSAGE_ID || typeof retrieveDisplayedMessage !== 'function') return;
+function getCurrentHostMessageId(): number | undefined {
+  return typeof getCurrentMessageId === 'function' ? getCurrentMessageId() : undefined;
+}
+
+function isLatestMessageId(messageId: number) {
+  return typeof getLastMessageId !== 'function' || messageId === getLastMessageId();
+}
+
+function findParentFloorElement(messageId: number, parentDocument = getParentDocument()): HTMLElement | undefined {
+  return parentDocument?.querySelector<HTMLElement>(`#chat .mes[mesid="${messageId}"]`) ?? undefined;
+}
+
+function readRegisteredHostMessageId(parentDocument = getParentDocument()): number | undefined {
+  const body = parentDocument?.body;
+  const raw = body?.getAttribute(SAME_FLOOR_HOST_ATTR);
+  const id = raw === null || raw === undefined ? NaN : Number(raw);
+  if (!Number.isFinite(id)) return undefined;
+  if (!findParentFloorElement(id, parentDocument)) {
+    body?.removeAttribute(SAME_FLOOR_HOST_ATTR);
+    parentDocument?.querySelectorAll(`.${SAME_FLOOR_HOST_CLASS}`).forEach(element => {
+      element.classList.remove(SAME_FLOOR_HOST_CLASS);
+    });
+    return undefined;
+  }
+  return id;
+}
+
+function registerHostFloor(messageId: number, parentDocument = getParentDocument()) {
+  const body = parentDocument?.body;
+  if (!body) return;
+  body.setAttribute(SAME_FLOOR_HOST_ATTR, String(messageId));
+  parentDocument?.querySelectorAll(`.${SAME_FLOOR_HOST_CLASS}`).forEach(element => {
+    element.classList.remove(SAME_FLOOR_HOST_CLASS);
+  });
+  findParentFloorElement(messageId, parentDocument)?.classList.add(SAME_FLOOR_HOST_CLASS);
+}
+
+function hideDisplayedFloor(messageId: number, hostMessageId = getCurrentHostMessageId()) {
+  if (messageId === hostMessageId || typeof retrieveDisplayedMessage !== 'function') return;
   try {
     retrieveDisplayedMessage(messageId).closest('.mes').css('display', 'none');
   } catch (error) {
@@ -44,109 +83,84 @@ function hideDisplayedFloor(messageId: number) {
   }
 }
 
-function hideAllNonBootFloors() {
+function hideAllNonHostFloors(hostMessageId = getCurrentHostMessageId()) {
+  if (typeof hostMessageId === 'number') registerHostFloor(hostMessageId);
   const lastMessageId = typeof getLastMessageId === 'function' ? getLastMessageId() : -1;
-  for (let messageId = 1; messageId <= lastMessageId; messageId += 1) hideDisplayedFloor(messageId);
+  for (let messageId = 0; messageId <= lastMessageId; messageId += 1) hideDisplayedFloor(messageId, hostMessageId);
 }
 
-function restoreAllNonBootFloors() {
+function restoreAllFloors() {
   if (typeof retrieveDisplayedMessage !== 'function') return;
+  const parentDocument = getParentDocument();
+  parentDocument?.body?.removeAttribute(SAME_FLOOR_HOST_ATTR);
+  parentDocument?.querySelectorAll(`.${SAME_FLOOR_HOST_CLASS}`).forEach(element => {
+    element.classList.remove(SAME_FLOOR_HOST_CLASS);
+  });
   const lastMessageId = typeof getLastMessageId === 'function' ? getLastMessageId() : -1;
-  for (let messageId = 1; messageId <= lastMessageId; messageId += 1) {
+  for (let messageId = 0; messageId <= lastMessageId; messageId += 1) {
     retrieveDisplayedMessage(messageId).closest('.mes').css('display', '');
   }
 }
 
-function isFrontendLoaderMessage(message: string | undefined) {
-  if (!message) return false;
-  return /\$\(('|")body\1\)\.load\(/.test(message) || /<body>\s*<script>[\s\S]*?\.load\(/.test(message);
-}
-
-async function maskFrontendLoaderMessagesForGeneration() {
-  if (typeof getLastMessageId !== 'function' || typeof getChatMessages !== 'function' || typeof setChatMessages !== 'function') {
-    return undefined;
-  }
-
-  const lastMessageId = getLastMessageId();
-  const messages = getChatMessages(`0-${Math.max(0, lastMessageId)}`, { role: 'all', hide_state: 'all' });
-  const leakedScriptMessages = messages.filter(
-    message => message.message_id !== BOOT_MESSAGE_ID && isFrontendLoaderMessage(message.message),
-  );
-
-  const updates: Array<Partial<ChatMessage> & { message_id: number }> = [];
-  const originals: Array<Partial<ChatMessage> & { message_id: number }> = [];
-  for (const message of leakedScriptMessages) {
-    originals.push({
-      message_id: message.message_id,
-      message: message.message,
-      is_hidden: message.is_hidden,
-      extra: message.extra,
-    });
-    updates.push({
-      message_id: message.message_id,
-      is_hidden: true,
-      message: FRONTEND_LOADER_PLACEHOLDER,
-      extra: {
-        ...(message.extra ?? {}),
-        primordia: {
-          ...(message.extra?.primordia ?? {}),
-          maskedFrontendLoaderLeak: true,
-          maskedAt: Date.now(),
-        },
-      },
-    });
-  }
-
-  if (updates.length > 0) await setChatMessages(updates, { refresh: 'none' });
-
-  return async () => {
-    if (originals.length === 0 || typeof setChatMessages !== 'function') return;
-    await setChatMessages(originals, { refresh: 'none' });
-  };
-}
-
+/**
+ * 父 CSS 宿主锁：第一个成功挂载的前端楼层会成为 UI 宿主。
+ * 后续楼层可正常生成和保存，但不能抢走宿主，避免 send 刷新中断前端。
+ * 直接打开打包产物预览时没有楼层 API，仍允许挂载。
+ */
 export function canMountSameFloorApp() {
-  return typeof getCurrentMessageId !== 'function' || getCurrentMessageId() === BOOT_MESSAGE_ID;
+  const currentMessageId = getCurrentHostMessageId();
+  if (currentMessageId === undefined) return true;
+  const registeredHostMessageId = readRegisteredHostMessageId();
+  if (registeredHostMessageId !== undefined) return currentMessageId === registeredHostMessageId;
+  return isLatestMessageId(currentMessageId);
 }
 
+/**
+ * 启用“原生楼层隐藏式伪同层”：只隐藏宿主页 DOM，不修改消息的 is_hidden 或聊天数据。
+ */
 export function activateSameFloorMode(): () => void {
   const parentDocument = getParentDocument();
   const body = parentDocument?.body;
+  const hostMessageId = readRegisteredHostMessageId(parentDocument) ?? getCurrentHostMessageId();
 
   if (parentDocument?.head && body) {
+    if (typeof hostMessageId === 'number') registerHostFloor(hostMessageId, parentDocument);
     let style = parentDocument.getElementById(SAME_FLOOR_STYLE_ID) as HTMLStyleElement | null;
     if (!style) {
       style = parentDocument.createElement('style');
       style.id = SAME_FLOOR_STYLE_ID;
-      style.textContent = `
-        body.${SAME_FLOOR_BODY_CLASS} #chat .mes[mesid]:not([mesid="${BOOT_MESSAGE_ID}"]) {
-          display: none !important;
-        }
-      `;
       parentDocument.head.append(style);
     }
+    style.textContent = `
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes[mesid]:not(.${SAME_FLOOR_HOST_CLASS}) {
+          display: none !important;
+        }
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes.${SAME_FLOOR_HOST_CLASS} {
+          display: flex !important;
+        }
+      `;
     body.classList.add(SAME_FLOOR_BODY_CLASS);
   }
 
-  hideAllNonBootFloors();
+  hideAllNonHostFloors(hostMessageId);
 
   const stops: EventOnReturn[] = [];
   if (typeof eventOn === 'function' && typeof tavern_events !== 'undefined') {
     stops.push(
-      eventOn(tavern_events.USER_MESSAGE_RENDERED, hideDisplayedFloor),
-      eventOn(tavern_events.CHARACTER_MESSAGE_RENDERED, hideDisplayedFloor),
-      eventOn(tavern_events.MORE_MESSAGES_LOADED, hideAllNonBootFloors),
-      eventOn(tavern_events.CHAT_CHANGED, hideAllNonBootFloors),
+      eventOn(tavern_events.USER_MESSAGE_RENDERED, messageId => hideDisplayedFloor(messageId, hostMessageId)),
+      eventOn(tavern_events.CHARACTER_MESSAGE_RENDERED, messageId => hideDisplayedFloor(messageId, hostMessageId)),
+      eventOn(tavern_events.MORE_MESSAGES_LOADED, () => hideAllNonHostFloors(hostMessageId)),
+      eventOn(tavern_events.CHAT_CHANGED, () => hideAllNonHostFloors(hostMessageId)),
     );
   }
 
-  console.info('[primordia] 已启用原生楼层隐藏式同楼层模式');
+  console.info('[primordia] 已启用原生楼层隐藏式伪同层模式');
 
   return () => {
     stopEventListeners(stops);
     body?.classList.remove(SAME_FLOOR_BODY_CLASS);
     parentDocument?.getElementById(SAME_FLOOR_STYLE_ID)?.remove();
-    restoreAllNonBootFloors();
+    restoreAllFloors();
   };
 }
 
@@ -209,6 +223,10 @@ async function stampNativeUserMessage(messageId: number, options: NativeNarrativ
   );
 }
 
+/**
+ * 通过 ST 原生发送/重生成流程取得真实 assistant 楼层。只有父页面不可访问时，才回退到
+ * createChatMessages + /trigger；生成结果始终由 ST 自己创建，前端不再伪造 assistant 楼层。
+ */
 export async function runNativeNarrativeTurn(
   userText: string,
   options: NativeNarrativeTurnOptions = {},
@@ -226,11 +244,8 @@ export async function runNativeNarrativeTurn(
   let streamedText = '';
   let userStampPromise: Promise<void> = Promise.resolve();
   let timeoutId = 0;
-  let restoreFrontendLoaderMessages: (() => Promise<void>) | undefined;
 
   try {
-    restoreFrontendLoaderMessages = await maskFrontendLoaderMessagesForGeneration();
-
     const assistantMessage = await new Promise<ChatMessage>((resolve, reject) => {
       let settled = false;
       const finish = (callback: () => void) => {
@@ -305,6 +320,5 @@ export async function runNativeNarrativeTurn(
   } finally {
     window.clearTimeout(timeoutId);
     stopEventListeners(stops);
-    await restoreFrontendLoaderMessages?.();
   }
 }

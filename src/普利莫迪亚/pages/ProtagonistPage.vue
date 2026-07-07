@@ -16,6 +16,9 @@ const cookingProgressText = computed(() => {
 const energyValue = computed(() => Math.max(0, Math.floor(Number(game.energy.value) || 0)));
 const energyMax = computed(() => Math.max(1, Math.floor(Number(game.energy.max) || 100)));
 const energyPercent = computed(() => `${Math.max(0, Math.min(100, (energyValue.value / energyMax.value) * 100))}%`);
+const protagonistTemporaryStates = computed(() =>
+  game.flattenTemporaryStates().filter(state => state.targetType === '主角'),
+);
 
 function trainCooking() {
   game.appendDraft('我在炉台旁练习基础火候、刀工和手感，想把厨艺磨得更稳一些。');
@@ -46,6 +49,16 @@ function trainCooking() {
           <div class="hero-facts">
             <span><b>当前状态</b>{{ p.mood }}</span>
             <span><b>一句话穿着</b>{{ p.outfit || '衣着暂未记录。' }}</span>
+          </div>
+          <div v-if="protagonistTemporaryStates.length" class="temp-states">
+            <span
+              v-for="state in protagonistTemporaryStates"
+              :key="`protagonist-${state.名称}-${state.描述}`"
+              class="temp-chip"
+              :title="state.描述"
+            >
+              {{ state.名称 }} · {{ state.剩余回合 }}回合
+            </span>
           </div>
           <p>{{ p.bio }}</p>
         </div>
@@ -132,6 +145,26 @@ function trainCooking() {
   color: var(--pm-ink-dim);
   font-family: var(--pm-font-display);
   font-size: calc(11px * var(--pm-text-scale));
+}
+.temp-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.temp-chip {
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid rgba(158, 111, 35, 0.44);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(242, 214, 132, 0.72), rgba(173, 126, 50, 0.45));
+  color: #4a2f12;
+  font-size: calc(11px * var(--pm-text-scale));
+  font-family: var(--pm-font-display);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stat-grid {
   display: grid;

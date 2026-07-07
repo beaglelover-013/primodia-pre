@@ -30,7 +30,7 @@ function renderBootError(error: unknown) {
 function mountApp() {
   if (mounted) return;
   if (!canMountSameFloorApp()) {
-    console.warn('[primordia] 当前不是第 0 楼，已阻止重复挂载大型前端。请让启动正则只匹配启动楼层。');
+    console.warn('[primordia] 当前不是最新楼层，已阻止重复挂载大型前端。请让启动正则只匹配需要承载界面的最新楼层。');
     return;
   }
   mounted = true;

@@ -56,12 +56,48 @@ function behaviorId(region: string, behavior: string) {
   return `behavior-${Math.abs(hash).toString(36)}`;
 }
 
+const behaviorKeywordPatterns = [
+  /打扫卫生/g,
+  /整理桌椅/g,
+  /整理桌子/g,
+  /整理椅子/g,
+  /擦桌(?:子)?/g,
+  /摆椅(?:子)?/g,
+  /收杯(?:子)?/g,
+  /洗杯(?:子)?/g,
+  /洗碗/g,
+  /扫地/g,
+  /拖地/g,
+  /擦柜台/g,
+  /看锅/g,
+  /添柴/g,
+  /端菜/g,
+  /招呼客人/g,
+  /整理床铺/g,
+  /铺床/g,
+];
+
+function shortenBehaviorText(text: string) {
+  if (!text) return '';
+  if (text.length <= 10) return text;
+  for (const pattern of behaviorKeywordPatterns) {
+    const matched = text.match(pattern)?.[0];
+    if (matched) return matched;
+  }
+  const firstPart = text
+    .split(/[、,，/／；;。.!！?？]|并且|以及|然后|同时|会|能|主动|不再/)
+    .map(part => part.trim())
+    .filter(Boolean)
+    .find(part => part.length >= 2 && part.length <= 10);
+  return firstPart || text.slice(0, 10);
+}
+
 function normalizeBehaviorText(value: unknown) {
-  return cleanText(value)
+  const text = cleanText(value)
     .replace(/^[-*•\d.、\s]+/, '')
     .replace(/[。.!！?？；;]+$/g, '')
-    .trim()
-    .slice(0, 18);
+    .trim();
+  return shortenBehaviorText(text);
 }
 
 function normalizeCharacterName(name: string) {
@@ -98,8 +134,8 @@ function normalizeBehaviorItem(value: unknown, fallbackRegion = ''): CharacterBe
     region,
     behavior,
     trigger: cleanText(record.trigger ?? record['触发']) || 'observed',
-    source: cleanText(record.source ?? record['来源']),
-    protagonistFeel: cleanText(record.protagonistFeel ?? record.protagonist_feel ?? record['主角感受']),
+    source: '',
+    protagonistFeel: '',
     learnedAtTurn: Math.max(0, Math.floor(Number(record.learnedAtTurn) || 0)),
     updatedAt: Math.max(0, Math.floor(Number(record.updatedAt) || Date.now())),
   };
@@ -135,8 +171,8 @@ export function formatCharacterBehaviorLibraryContent(library: CharacterBehavior
     version: 1,
     characterId: cleanText(library.characterId),
     characterName: cleanText(library.characterName) || '未命名角色',
-    behaviors: library.behaviors.map(item => ({ ...item, id: item.id || behaviorId(item.region, item.behavior) })),
-    unlocatedBehaviors: library.unlocatedBehaviors.map(item => ({ ...item, id: item.id || behaviorId(item.region, item.behavior) })),
+    behaviors: library.behaviors.map(item => ({ ...item, source: '', protagonistFeel: '', id: item.id || behaviorId(item.region, item.behavior) })),
+    unlocatedBehaviors: library.unlocatedBehaviors.map(item => ({ ...item, source: '', protagonistFeel: '', id: item.id || behaviorId(item.region, item.behavior) })),
     updatedAt: Date.now(),
   };
   return `<${CHARACTER_BEHAVIOR_BLOCK_TAG}>\n${JSON.stringify(normalized, null, 2)}\n</${CHARACTER_BEHAVIOR_BLOCK_TAG}>`;
@@ -207,7 +243,7 @@ export async function saveCharacterBehaviorLibraryToEntry(ref: WorldbookEntryRef
 function upsertBehavior(list: CharacterBehaviorItem[], item: CharacterBehaviorItem) {
   const id = behaviorId(item.region, item.behavior);
   const index = list.findIndex(existing => existing.id === id || behaviorId(existing.region, existing.behavior) === id);
-  const next = { ...item, id, updatedAt: Date.now() };
+  const next = { ...item, id, source: '', protagonistFeel: '', updatedAt: Date.now() };
   if (index >= 0) list[index] = { ...list[index], ...next, learnedAtTurn: list[index].learnedAtTurn || next.learnedAtTurn };
   else list.push(next);
 }
@@ -247,8 +283,8 @@ export function applyCharacterBehaviorUpdatesToLibrary(
         region,
         behavior,
         trigger: cleanText(update.trigger) || 'observed',
-        source: cleanText(update.source),
-        protagonistFeel: cleanText(update.protagonistFeel),
+        source: '',
+        protagonistFeel: '',
         learnedAtTurn: Math.max(0, turn),
         updatedAt: Date.now(),
       };

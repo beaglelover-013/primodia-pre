@@ -16,14 +16,22 @@ import {
   writeTurnContextWorldbookEntry,
   type TurnContextWorldbookBinding,
 } from '../services/turnContextWorldbook';
+import {
+  getPrimordiaMvuData,
+  readPrimordiaStatDataFromOptions,
+  unwrapPrimordiaStatData,
+  wrapPrimordiaMvuData,
+  writePrimordiaStatData,
+} from '../services/mvuDataBridge';
 
 export interface UnifiedRequestCallbacks {
-  onStreamingMaintext?: (text: string) => void;
   onTurnContextWorldbookWritten?: (binding: TurnContextWorldbookBinding) => void;
+  onStreamingMaintext?: (maintext: string) => void;
   createUserMessage?: boolean;
   authoritativeData?: Record<string, any>;
   turnContextWorldbookBinding?: Partial<TurnContextWorldbookBinding> | null;
   worldbookScanText?: string;
+  enableStreamingMaintext?: boolean;
   preserveNarrativeScene?: boolean;
   allowGeneratedInventory?: boolean;
   allowGeneratedStats?: boolean;
@@ -87,6 +95,14 @@ const promptDebugSnapshots: PromptDebugSnapshot[] = [];
 const finalPromptDebugSnapshots: FinalPromptDebugSnapshot[] = [];
 let finalPromptDebugSubscribed = false;
 let latestWorldbookEntries: Array<Record<string, unknown>> = [];
+
+declare const getVariables: undefined | ((options?: Record<string, any>) => any);
+declare const updateVariablesWith:
+  | undefined
+  | ((updater: (variables: Record<string, any>) => Record<string, any> | void, options?: Record<string, any>) => Promise<void> | void);
+declare const getCurrentMessageId: undefined | (() => number);
+declare const getLastMessageId: undefined | (() => number);
+declare const Mvu: any;
 
 function summarizeBaseData(data: Record<string, any>): string {
   const keys = Object.keys(data ?? {});
@@ -355,11 +371,7 @@ export async function previewUnifiedNarrativeRequest(
         ? prompt
         : `<玩家本回合行动>\n${prompt}\n</玩家本回合行动>`;
     const worldbookScanText = callbacks.worldbookScanText?.trim() ?? '';
-    const greenWorldbookScanText = buildGreenWorldbookScanText([
-      worldbookScanText,
-      visibleUserAction || prompt,
-      promptForInject,
-    ]);
+    const greenWorldbookScanText = buildGreenWorldbookScanText([worldbookScanText, visibleUserAction || prompt]);
     const activatedWorldbookEntries = await scanWorldbookForPreflight([greenWorldbookScanText]);
 
     const snapshot = rememberFinalPromptDebug({
@@ -441,75 +453,47 @@ function extractLastTag(content: string, tagName: string): string {
   return matches.at(-1)?.[1]?.trim() ?? '';
 }
 
-function extractStreamingMaintext(fullText: string): string {
-  const cleaned = stripThinkingBlocks(fullText);
-  const maintext = cleaned.match(/<maintext\b[^>]*>([\s\S]*?)(?:<\/maintext>|$)/i);
-  if (maintext?.[1]) return stripHiddenOutputTags(maintext[1]).trim();
-
-  const narrative = cleaned.match(/<NARRATIVE\b[^>]*>([\s\S]*?)(?:<\/NARRATIVE>|$)/i);
-  if (narrative?.[1]) return stripHiddenOutputTags(narrative[1]).trim();
-
-  const openTagStart = cleaned.toLowerCase().lastIndexOf('<maintext');
-  if (openTagStart !== -1) {
-    const tagEnd = cleaned.indexOf('>', openTagStart);
-    if (tagEnd !== -1) return stripHiddenOutputTags(cleaned.slice(tagEnd + 1)).trim();
-  }
-
-  const openNarrativeStart = cleaned.toLowerCase().lastIndexOf('<narrative');
-  if (openNarrativeStart !== -1) {
-    const tagEnd = cleaned.indexOf('>', openNarrativeStart);
-    if (tagEnd !== -1) return stripHiddenOutputTags(cleaned.slice(tagEnd + 1)).trim();
-  }
-
-  const visible = stripHiddenOutputTags(cleaned)
-    .replace(/```[\w-]*\s*/g, '')
-    .replace(/```/g, '')
-    .replace(/<[^>\n]*$/g, '')
-    .trim();
-  if (/^</.test(visible)) return '';
-  return visible;
-}
-
 async function readBaseMvuData(): Promise<Record<string, any>> {
-  const unwrapStatData = (value: any): Record<string, any> | null => {
-    if (!value || typeof value !== 'object') return null;
-    if (value.stat_data && typeof value.stat_data === 'object') return value.stat_data;
-    return value;
-  };
-
   try {
-    await waitGlobalBriefly('Mvu');
-    if (typeof Mvu !== 'undefined') {
-      const currentId =
-        typeof getLastMessageId === 'function'
+    const mvuData = await getPrimordiaMvuData();
+    const statData = unwrapPrimordiaStatData(mvuData);
+    if (statData) return statData;
+
+    const currentId =
+      typeof getCurrentMessageId === 'function'
+        ? getCurrentMessageId()
+        : typeof getLastMessageId === 'function'
           ? getLastMessageId()
-          : typeof getCurrentMessageId === 'function'
-            ? getCurrentMessageId()
-            : undefined;
-      if (typeof currentId === 'number' && currentId >= 0) {
-        const data = unwrapStatData(Mvu.getMvuData?.({ type: 'message', message_id: currentId }));
-        if (data) return data;
-      }
-    }
-  } catch {
-    /* 回退到变量接口 */
-  }
-
-  try {
-    if (typeof getVariables === 'function') {
-      const vars = unwrapStatData(
-        await getVariables({
-          type: 'message',
-          message_id: typeof getLastMessageId === 'function' ? getLastMessageId() : undefined,
-        }),
-      );
-      if (vars) return vars;
-    }
+          : undefined;
+    const latestId = typeof getLastMessageId === 'function' ? getLastMessageId() : undefined;
+    const messageIds = [
+      typeof currentId === 'number' ? currentId : undefined,
+      typeof latestId === 'number' ? latestId : undefined,
+      -1,
+    ].filter((value, index, list): value is number => typeof value === 'number' && list.indexOf(value) === index);
+    const options: Array<Record<string, any>> = [
+      ...messageIds.map(message_id => ({ type: 'message', message_id })),
+      { type: 'message' },
+    ];
+    const data = readPrimordiaStatDataFromOptions(options);
+    if (data) return data;
+    await waitGlobalBriefly('Mvu');
+    return readPrimordiaStatDataFromOptions(options) ?? {};
   } catch {
     /* 使用空数据 */
   }
 
   return {};
+}
+
+async function writeMessageStatData(statData: Record<string, any>, messageId?: number): Promise<boolean> {
+  const target = { type: 'message', message_id: typeof messageId === 'number' ? messageId : -1 };
+  try {
+    return await writePrimordiaStatData(cloneData(statData), target);
+  } catch (error) {
+    console.warn('[primordia] 写入 assistant stat_data 失败:', error);
+  }
+  return false;
 }
 
 function normalizeAssistantMessage(raw: string): {
@@ -628,7 +612,9 @@ async function parseMvuData(message: string, baseData: Record<string, any>): Pro
   try {
     await waitGlobalBriefly('Mvu');
     if (typeof Mvu !== 'undefined' && typeof Mvu.parseMessage === 'function') {
-      parsedData = (await Mvu.parseMessage(message, baseData)) ?? baseData;
+      const baseEnvelope = wrapPrimordiaMvuData(baseData);
+      const parsedEnvelope = await Mvu.parseMessage(message, baseEnvelope);
+      parsedData = unwrapPrimordiaStatData(parsedEnvelope) ?? parsedEnvelope?.stat_data ?? baseData;
     }
   } catch (error) {
     console.warn('[primordia] MVU 解析失败:', error);
@@ -1054,7 +1040,36 @@ function emitStoryUpdated(latest: LatestMaintextPayload) {
   window.dispatchEvent(new CustomEvent(PRIMORDIA_STORY_UPDATED, { detail: latest }));
 }
 
+function extractPartialTagBody(content: string, tagName: string): string {
+  if (!content) return '';
+  const openTag = new RegExp(`<${tagName}\\b[^>]*>`, 'i');
+  const openMatch = openTag.exec(content);
+  if (!openMatch) return '';
+  const start = openMatch.index + openMatch[0].length;
+  const closeTag = new RegExp(`</${tagName}>`, 'i');
+  const closeMatch = closeTag.exec(content.slice(start));
+  const end = closeMatch ? start + closeMatch.index : content.length;
+  return content.slice(start, end).trim();
+}
+
+function hasRenderableStreamingText(text: string): boolean {
+  return text.replace(/[-—–_\s.。·・]+/g, '').trim().length > 0;
+}
+
+function extractStreamingMaintext(content: string): string {
+  const cleaned = stripThinkingBlocks(content);
+  const body = extractPartialTagBody(cleaned, 'maintext') || extractPartialTagBody(cleaned, 'NARRATIVE');
+  if (!body) return '';
+  const text = stripHiddenOutputTags(body)
+    .replace(/<[^>\n]*$/g, '')
+    .replace(/```[\w-]*\s*/g, '')
+    .replace(/```/g, '')
+    .trim();
+  return hasRenderableStreamingText(text) ? text : '';
+}
+
 function emitStoryStreaming(maintext: string) {
+  if (!maintext.trim()) return;
   window.dispatchEvent(new CustomEvent(PRIMORDIA_STORY_STREAMING, { detail: maintext }));
 }
 
@@ -1129,7 +1144,7 @@ export async function runUnifiedNarrativeRequest(
         ? prompt
         : `<玩家本回合行动>\n${prompt}\n</玩家本回合行动>`;
     const worldbookScanText = callbacks.worldbookScanText?.trim();
-    const greenWorldbookScanText = buildGreenWorldbookScanText([worldbookScanText, visibleUserAction || prompt, promptForInject]);
+    const greenWorldbookScanText = buildGreenWorldbookScanText([worldbookScanText, visibleUserAction || prompt]);
     const injects: Array<Record<string, unknown>> = [];
     if (greenWorldbookScanText) {
       injects.push({
@@ -1177,14 +1192,6 @@ export async function runUnifiedNarrativeRequest(
       ],
     });
 
-    const pushStreamingText = (text: string) => {
-      const maintext = extractStreamingMaintext(text);
-      if (maintext) {
-        emitStoryStreaming(maintext);
-        callbacks.onStreamingMaintext?.(maintext);
-      }
-    };
-
     let turnContextBinding: TurnContextWorldbookBinding;
     try {
       turnContextBinding = await writeTurnContextWorldbookEntry(callbacks.turnContextWorldbookBinding, {
@@ -1200,7 +1207,8 @@ export async function runUnifiedNarrativeRequest(
 
     const nativeTurn = await runNativeNarrativeTurn(visibleUserAction || prompt, {
       createUserMessage: shouldCreateUserMessage,
-      userMessageData,
+      forceGenerateStreaming: callbacks.enableStreamingMaintext === true,
+      userMessageData: wrapPrimordiaMvuData(userMessageData),
       userMessageExtra: {
         primordia: {
           turnId,
@@ -1208,7 +1216,13 @@ export async function runUnifiedNarrativeRequest(
           savedAt: Date.now(),
         },
       },
-      onStreamingText: pushStreamingText,
+      onStreamingText: text => {
+        if (callbacks.enableStreamingMaintext === false) return;
+        const maintext = extractStreamingMaintext(text);
+        if (!maintext) return;
+        callbacks.onStreamingMaintext?.(maintext);
+        emitStoryStreaming(maintext);
+      },
     });
     const generatedText = nativeTurn.assistantMessage.message?.trim() || nativeTurn.streamedText.trim();
     if (!generatedText) {
@@ -1303,7 +1317,7 @@ export async function runUnifiedNarrativeRequest(
       [
         {
           message_id: assistantId,
-          data: finalData,
+          data: wrapPrimordiaMvuData(finalData),
           extra: {
             ...(nativeTurn.assistantMessage.extra ?? {}),
             primordia: {
@@ -1321,13 +1335,7 @@ export async function runUnifiedNarrativeRequest(
     latest.messageId = assistantId;
     if (typeof userMessageId === 'number') latest.userMessageId = userMessageId;
 
-    if (typeof Mvu !== 'undefined' && typeof Mvu.replaceMvuData === 'function') {
-      try {
-        await Mvu.replaceMvuData(finalData, { type: 'message', message_id: assistantId });
-      } catch (error) {
-        console.warn('[primordia] replaceMvuData 失败:', error);
-      }
-    }
+    await writeMessageStatData(finalData, assistantId);
 
     emitStoryUpdated(latest);
     return {

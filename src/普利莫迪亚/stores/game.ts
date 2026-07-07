@@ -60,6 +60,11 @@ import {
   type NpcActivityWorldbookLibrary,
 } from '../services/npcActivityWorldbook';
 import {
+  normalizeMessageVariableOption,
+  readPrimordiaStatDataFromOptions,
+  writePrimordiaStatData,
+} from '../services/mvuDataBridge';
+import {
   ensureWeatherWorldbookBinding,
   fullWeatherWorldbookTemplate,
   loadWeatherLibraryFromActiveWorldbooks,
@@ -382,6 +387,7 @@ export interface BrewBarrel {
 }
 
 export type TabId =
+  | 'opening'
   | 'chronicle'
   | 'tavern'
   | 'protagonist'
@@ -1213,33 +1219,24 @@ interface SystemJudgementSnapshot {
 
 function readMessageStatData(preferredMessageId?: number): PrimordiaStatData | null {
   try {
-    const global = globalThis as any;
-    const unwrapStatData = (variables: any): PrimordiaStatData | null => {
-      if (!variables || typeof variables !== 'object') return null;
-      if (variables.stat_data && typeof variables.stat_data === 'object') return variables.stat_data;
-      return variables;
-    };
     const latestMessageId = typeof getLastMessageId === 'function' ? getLastMessageId() : undefined;
     const currentMessageId = typeof getCurrentMessageId === 'function' ? getCurrentMessageId() : undefined;
-    const messageId = preferredMessageId ?? (typeof latestMessageId === 'number' ? latestMessageId : currentMessageId);
-    const candidates =
-      preferredMessageId !== undefined
-        ? [
-            () => (global.Mvu?.getMvuData ? global.Mvu.getMvuData({ type: 'message', message_id: preferredMessageId }) : null),
-            () => (typeof getVariables === 'function' ? getVariables({ type: 'message', message_id: preferredMessageId }) : null),
-          ]
-        : [
-            () => (global.Mvu?.getMvuData && messageId !== undefined ? global.Mvu.getMvuData({ type: 'message', message_id: messageId }) : null),
-            () => (global.Mvu?.getMvuData ? global.Mvu.getMvuData({ type: 'message', message_id: 'latest' }) : null),
-            () => (typeof getVariables === 'function' && messageId !== undefined ? getVariables({ type: 'message', message_id: messageId }) : null),
-            () => (typeof getVariables === 'function' ? getVariables({ type: 'message', message_id: 'latest' }) : null),
-            () => (typeof getVariables === 'function' ? getVariables({ type: 'message' }) : null),
-          ];
-
-    for (const read of candidates) {
-      const statData = unwrapStatData(read());
-      if (statData) return statData;
-    }
+    const latestAssistantMessageId =
+      preferredMessageId === undefined && typeof getChatMessages === 'function'
+        ? getChatMessages(-1, { role: 'assistant' })?.at(-1)?.message_id
+        : undefined;
+    const messageIds = [
+      preferredMessageId,
+      typeof latestAssistantMessageId === 'number' ? latestAssistantMessageId : undefined,
+      typeof latestMessageId === 'number' ? latestMessageId : undefined,
+      typeof currentMessageId === 'number' ? currentMessageId : undefined,
+      -1,
+    ].filter((value, index, list): value is number => typeof value === 'number' && list.indexOf(value) === index);
+    const options: Array<Record<string, any>> = [
+      ...messageIds.map(message_id => ({ type: 'message', message_id })),
+      { type: 'message' },
+    ];
+    return readPrimordiaStatDataFromOptions(options) as PrimordiaStatData | null;
   } catch (error) {
     console.warn('[primordia] 读取 MVU 变量失败:', error);
   }
@@ -1291,18 +1288,19 @@ export const useGameStore = defineStore('primordia', () => {
     applyTheme(value);
   });
 
-  const streamMaintext = ref(localStorage.getItem('primordia.streamMaintext') !== 'false');
-  watch(streamMaintext, value => {
-    localStorage.setItem('primordia.streamMaintext', String(value));
-  });
   const sendWeatherToAi = ref(localStorage.getItem('primordia.sendWeatherToAi') !== 'false');
   watch(sendWeatherToAi, value => {
     localStorage.setItem('primordia.sendWeatherToAi', String(value));
+  });
+  const enableStoryStreaming = ref(localStorage.getItem('primordia.enableStoryStreaming') !== 'false');
+  watch(enableStoryStreaming, value => {
+    localStorage.setItem('primordia.enableStoryStreaming', String(value));
   });
   const openingRequired = ref(false);
   const openingCompleted = ref(false);
   const openingSave = ref<OpeningSaveSnapshot | null>(null);
   const openingWorkshopForced = ref(false);
+  const openingWorkshopEnabled = ref(localStorage.getItem('primordia.openingWorkshopEnabled') === 'true');
 
   /* HUD: 历法与位置 */
   const calendar = reactive({
@@ -1337,7 +1335,9 @@ export const useGameStore = defineStore('primordia', () => {
   const weekDayName = computed(() => weekDays[weekDayIndex.value] ?? '一日');
   const isMarketDay = computed(() => weekDayIndex.value === 4);
   const currentTimeOfDay = computed(() => timeOfDayFromClock(calendar.clock) ?? calendar.timeOfDay);
-  const shouldShowOpeningWorkshop = computed(() => openingWorkshopForced.value || (openingRequired.value && !openingCompleted.value));
+  const shouldShowOpeningWorkshop = computed(
+    () => openingWorkshopForced.value || (openingWorkshopEnabled.value && openingRequired.value && !openingCompleted.value),
+  );
   const dateText = computed(() => `共栖历 ${calendar.year} 年 · ${months[calendar.monthIndex]}（${seasonText.value}）第 ${calendar.day} 日 · ${weekDayName.value} · ${currentTimeOfDay.value}`);
   const clockText = computed(() => `约 ${calendar.clock}`);
   const lastTickAt = ref(Date.now());
@@ -1511,11 +1511,41 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function normalizeNpcBehaviorCandidate(value: unknown) {
-    return String(value ?? '')
+    const text = String(value ?? '')
       .trim()
       .replace(/^[-*•\d.、\s]+/, '')
-      .replace(/[。.!！?？；;]+$/g, '')
-      .slice(0, 18);
+      .replace(/[。.!！?？；;]+$/g, '');
+    if (!text) return '';
+    if (text.length <= 10) return text;
+    const keywordPatterns = [
+      /打扫卫生/g,
+      /整理桌椅/g,
+      /整理桌子/g,
+      /整理椅子/g,
+      /擦桌(?:子)?/g,
+      /摆椅(?:子)?/g,
+      /收杯(?:子)?/g,
+      /洗杯(?:子)?/g,
+      /洗碗/g,
+      /扫地/g,
+      /拖地/g,
+      /擦柜台/g,
+      /看锅/g,
+      /添柴/g,
+      /端菜/g,
+      /招呼客人/g,
+      /整理床铺/g,
+      /铺床/g,
+    ];
+    for (const pattern of keywordPatterns) {
+      const matched = text.match(pattern)?.[0];
+      if (matched) return matched;
+    }
+    return text
+      .split(/[、,，/／；;。.!！?？]|并且|以及|然后|同时|会|能|主动|不再/)
+      .map(part => part.trim())
+      .filter(part => part.length >= 2 && part.length <= 10)
+      .at(0) ?? text.slice(0, 10);
   }
 
   function isRestNpcActivity(behavior: string) {
@@ -2451,6 +2481,8 @@ export const useGameStore = defineStore('primordia', () => {
 
   const generatedShop = ref<StreetShop | null>(null);
   const generatedShopProducts = ref<ShopProduct[]>([]);
+  const currentVariableShopName = ref('');
+  const currentVariablePlaceText = ref('');
 
   /* 农田 */
   const farmPlots = ref<FarmPlot[]>([]);
@@ -2612,6 +2644,16 @@ export const useGameStore = defineStore('primordia', () => {
     }
     const lastSegment = lastShopNameSegment(expectedName);
     return Boolean(lastSegment && placeLooksShop && placeText.includes(lastSegment));
+  }
+
+  function variablePlaceMatchesShopName(shopName: string | undefined, placeText: string | undefined) {
+    const expectedName = normalizeScenePlaceName(shopName ?? '');
+    const variablePlace = normalizeScenePlaceName(placeText ?? '');
+    if (!expectedName || !variablePlace) return false;
+    if (variablePlace === expectedName || variablePlace.includes(expectedName)) return true;
+    const expectedCompact = compactShopCompareText(expectedName);
+    const placeCompact = compactShopCompareText(variablePlace);
+    return Boolean(expectedCompact && placeCompact && placeCompact.includes(expectedCompact));
   }
 
   function currentSceneCanHostShop(shopName?: string) {
@@ -3128,12 +3170,8 @@ export const useGameStore = defineStore('primordia', () => {
     if (messageId === undefined || messageId === null) return true;
 
     pushLog('系统', `从临时读档楼层 #${messageId} 继续，正在覆盖该楼层之后的记录。`);
-    storyContinuityOverride.value = checkpoint;
     const truncated = await truncateChatAfterLoadedCheckpoint(messageId);
-    if (!truncated) {
-      storyContinuityOverride.value = null;
-      return false;
-    }
+    if (!truncated) return false;
     if (!restoreStorySnapshot(messageId)) loadFromMvu({ messageId, force: true });
     loadedStoryCheckpoint.value = null;
     return true;
@@ -3453,10 +3491,18 @@ export const useGameStore = defineStore('primordia', () => {
 
   function formatTemporaryStatePromptBlock() {
     const active = flattenTemporaryStates();
-    if (!active.length) return '';
+    const rules = [
+      '临时状态回合规则:',
+      '- 上方“还剩X回合”表示该状态在本回合叙述中仍然有效，正文必须承认它的影响。',
+      '- 本回合生成完成后，前端会自动把回合开始前已经存在的临时状态剩余回合 -1；AI不要为了普通时间推进输出“剩余回合减1”的变量补丁，避免重复扣减。',
+      '- 只有状态被本回合行动提前解除、覆盖、刷新持续时间，或新增状态时，才输出对应 <UpdateVariable>/<JSONPatch>。',
+      '- 新增临时状态必须写清 名称、剩余回合、描述、来源物品；剩余回合必须是正整数。',
+    ];
+    if (!active.length) return ['当前临时状态: 无。', ...rules].join('\n');
     return [
       '当前临时状态:',
       ...active.map(state => `- ${state.targetName}处于「${state.名称}」，还剩${state.剩余回合}回合。${state.描述}${state.来源物品 ? ` 来源物品: ${state.来源物品}。` : ''}`),
+      ...rules,
     ].join('\n');
   }
 
@@ -4310,6 +4356,7 @@ export const useGameStore = defineStore('primordia', () => {
         '请承接上一楼层，叙述使用物品的动作、感受和现场反应。',
         '如果该物品产生明确短期影响，请在 <UpdateVariable> 的 <JSONPatch> 中插入临时状态。',
         '临时状态只使用字段: 名称、剩余回合、描述、来源物品。',
+        '剩余回合表示从当前回合开始还能持续几个叙事回合，必须写正整数；回合结束后的倒计时由前端自动处理，不要手动给已有状态减回合。',
         `示例: { "op": "insert", "path": "/临时状态/主角/-", "value": { "名称": "力大如牛", "剩余回合": 3, "描述": "${target}短时间内力量明显增强。", "来源物品": "${item.name}" } }`,
         '可写入路径: /临时状态/主角/-、/临时状态/酒馆/-、/临时状态/酒馆区域/区域名/-、/临时状态/人物/人物名/-。',
         '普通吃喝、试用或没有持续影响时，可以只叙事，不必强行生成状态。',
@@ -4646,8 +4693,20 @@ export const useGameStore = defineStore('primordia', () => {
   function isCurrentShopLocation(shopName?: string) {
     const expectedName = shopName?.trim();
     const currentShopName = generatedShop.value?.name?.trim();
+    const variableShopName = currentVariableShopName.value.trim();
+    const variablePlaceText = currentVariablePlaceText.value.trim();
     const placeText = currentPlaceText();
 
+    if (variableShopName) {
+      if (expectedName) return expectedName === variableShopName || variablePlaceMatchesShopName(expectedName, variableShopName);
+      if (currentShopName) return currentShopName === variableShopName || variablePlaceMatchesShopName(currentShopName, variableShopName);
+      return true;
+    }
+    if (variablePlaceText) {
+      if (expectedName) return variablePlaceMatchesShopName(expectedName, variablePlaceText);
+      if (currentShopName) return variablePlaceMatchesShopName(currentShopName, variablePlaceText);
+      return false;
+    }
     if (expectedName && shopNameMatchesPlace(expectedName, placeText)) return true;
     if (!expectedName && currentShopName && shopNameMatchesPlace(currentShopName, placeText)) return true;
     if (expectedName) return false;
@@ -5138,6 +5197,7 @@ export const useGameStore = defineStore('primordia', () => {
     moneyAccountRef(account).value = Math.max(0, moneyAccountRef(account).value + delta);
     markLocalStateDirty();
     void writeChatSave();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(action.reason || '调试资金调整'));
     pushLog(delta >= 0 ? '奖励' : '扣减', `${action.reason} · ${moneyAccountLabel(account)} ${delta >= 0 ? '+' : '-'}${formatCopper(Math.abs(delta))}`);
     return {
       ok: true,
@@ -5158,6 +5218,7 @@ export const useGameStore = defineStore('primordia', () => {
     if (action.stat === 'reputation_delta') reputation.value = Math.min(100, Math.max(0, reputation.value + Math.floor(action.value ?? 0)));
     markLocalStateDirty();
     void writeChatSave();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(action.reason || '调试状态调整'));
     pushLog('系统', action.reason);
     return {
       ok: true,
@@ -5401,6 +5462,7 @@ export const useGameStore = defineStore('primordia', () => {
             }
           : {},
       },
+      人物: relationshipSnapshot,
       人物羁绊: relationshipSnapshot,
       农田与酒窖: {
         农田: farmSnapshot,
@@ -5412,9 +5474,13 @@ export const useGameStore = defineStore('primordia', () => {
     };
   }
 
+  function getAuthoritativeMvuData(preferredMessageId?: number, fallbackSummary = ''): PrimordiaStatData {
+    const statData = readMessageStatData(preferredMessageId);
+    return statData ? clonePlainData(statData) : buildFrontendMvuSnapshot(fallbackSummary);
+  }
+
   function buildAuthoritativeRequestData(text: string): PrimordiaStatData {
-    const snapshot = buildFrontendMvuSnapshot(text);
-    return snapshot;
+    return getAuthoritativeMvuData(undefined, text);
   }
 
   function readStoredFloorSnapshots() {
@@ -5982,6 +6048,7 @@ export const useGameStore = defineStore('primordia', () => {
     }
     openingCompleted.value = false;
     openingRequired.value = true;
+    if (currentTab.value === 'chronicle') currentTab.value = 'opening';
     return openingRequired.value;
   }
 
@@ -6352,7 +6419,6 @@ export const useGameStore = defineStore('primordia', () => {
                 type: 'opening_story',
                 savedAt: Date.now(),
                 worldbookName: draft.worldbookName,
-                gameInfoUid: worldbookResult.entry.uid,
               },
             },
           },
@@ -6360,8 +6426,8 @@ export const useGameStore = defineStore('primordia', () => {
         { refresh: 'none' },
       );
       messageId = typeof getLastMessageId === 'function' ? getLastMessageId() : undefined;
-      if (typeof Mvu !== 'undefined' && typeof Mvu.replaceMvuData === 'function' && typeof messageId === 'number') {
-        await Mvu.replaceMvuData(statData, { type: 'message', message_id: messageId });
+      if (typeof messageId === 'number') {
+        await writePrimordiaStatData(statData, normalizeMessageVariableOption(messageId));
       }
     } catch (error) {
       const detail = describeHostError(error, '楼层接口没有返回具体错误。');
@@ -6373,7 +6439,6 @@ export const useGameStore = defineStore('primordia', () => {
       openingMessageId: messageId,
       fingerprint: buildOpeningFingerprintFromDraft(draft),
       worldbookName: draft.worldbookName,
-      gameInfoUid: worldbookResult.entry.uid,
       turnContextWorldbookBinding: clonePlain(worldbookResult.turnContextBinding),
       moduleResults: worldbookResult.moduleResults,
       completedAt: Date.now(),
@@ -6632,6 +6697,14 @@ export const useGameStore = defineStore('primordia', () => {
     }
   }
 
+  function stableShopProductId(shopName: string, product: ParsedShop['products'][number], index: number) {
+    const key = [shopName, product.name, product.category, index]
+      .map(part => String(part ?? '').trim().replace(/\s+/g, '_'))
+      .filter(Boolean)
+      .join('-');
+    return `ai-shop-${key || index}`;
+  }
+
   function applyGeneratedShop(shop: ParsedShop, options: { silent?: boolean; setLocation?: boolean } = {}) {
     const firstCategory = shop.products[0]?.category ?? '杂物';
     generatedShop.value = {
@@ -6644,7 +6717,7 @@ export const useGameStore = defineStore('primordia', () => {
       tags: [...new Set(shop.products.flatMap(product => product.tags))].slice(0, 6),
     };
     generatedShopProducts.value = shop.products.map((product, index) => ({
-      id: `ai-shop-${Date.now()}-${index}-${product.name}`,
+      id: stableShopProductId(shop.name, product, index),
       name: product.name,
       shop: shop.name,
       category: normalizeInventoryCategory(product.category),
@@ -6662,6 +6735,48 @@ export const useGameStore = defineStore('primordia', () => {
     });
   }
 
+  function persistParsedShopIntoMvuData(data: PrimordiaStatData, shop: ParsedShop) {
+    if (!data.街坊商铺 || typeof data.街坊商铺 !== 'object' || Array.isArray(data.街坊商铺)) data.街坊商铺 = {};
+    const streetShopRoot = data.街坊商铺 as Record<string, any>;
+    if (!streetShopRoot.商铺 || typeof streetShopRoot.商铺 !== 'object' || Array.isArray(streetShopRoot.商铺)) {
+      streetShopRoot.商铺 = {};
+    }
+    const shops = streetShopRoot.商铺 as Record<string, any>;
+    const existingShop = asRecord(shops[shop.name]);
+    const firstCategory = shop.products[0]?.category ?? '杂物';
+    shops[shop.name] = {
+      ...existingShop,
+      类型: existingShop['类型'] ?? normalizeShopKind(firstCategory),
+      店主: shop.keeper || existingShop['店主'] || existingShop['掌柜'] || existingShop['老板'] || '',
+      氛围: shop.description || existingShop['氛围'] || existingShop['描述'] || '',
+      描述: shop.description || existingShop['描述'] || existingShop['氛围'] || '',
+      今日货架: Object.fromEntries(
+        shop.products.map(product => [
+          product.name,
+          {
+            名称: product.name,
+            分类: normalizeInventoryCategory(product.category),
+            单价铜币: product.priceCopper,
+            数量: product.stock,
+            标签: clonePlain(product.tags ?? []),
+            描述: product.desc ?? '',
+          },
+        ]),
+      ),
+    };
+    streetShopRoot.当前商铺 = shop.name;
+
+    if (!data.世界 || typeof data.世界 !== 'object' || Array.isArray(data.世界)) data.世界 = {};
+    const world = data.世界 as Record<string, any>;
+    if (!world.当前地点 || typeof world.当前地点 !== 'object' || Array.isArray(world.当前地点)) {
+      world.当前地点 = { 区域: location.region || '', 具体位置: shop.name };
+    } else {
+      world.当前地点.具体位置 = shop.name;
+    }
+    if (!data.主角 || typeof data.主角 !== 'object' || Array.isArray(data.主角)) data.主角 = {};
+    (data.主角 as Record<string, any>).所在位置 = shop.name;
+  }
+
   function clearGeneratedShop(options: { silent?: boolean } = {}) {
     generatedShop.value = null;
     generatedShopProducts.value = [];
@@ -6676,9 +6791,21 @@ export const useGameStore = defineStore('primordia', () => {
     }
   }
 
-  function readGeneratedShopFromMvuData(data: PrimordiaStatData): ParsedShop | undefined {
-    const shopRecord = readRecordPath(data, [...legacyPathAliases('街坊商铺.商铺'), '街坊商铺.店铺']);
+  function readMvuShopRecord(data: PrimordiaStatData) {
+    return readRecordPath(data, [...legacyPathAliases('街坊商铺.商铺'), '街坊商铺.店铺']);
+  }
+
+  function readMvuCurrentShopName(data: PrimordiaStatData) {
     const currentShopName = String(readFirstPath(data, legacyPathAliases('街坊商铺.当前商铺'), '') || '').trim();
+    if (currentShopName) return currentShopName;
+    const variablePlaceText = readMvuPlaceText(data);
+    const shopRecord = readMvuShopRecord(data);
+    return Object.keys(shopRecord).find(shopName => variablePlaceMatchesShopName(shopName, variablePlaceText)) ?? '';
+  }
+
+  function readGeneratedShopFromMvuData(data: PrimordiaStatData, preferredShopName = ''): ParsedShop | undefined {
+    const shopRecord = readMvuShopRecord(data);
+    const currentShopName = preferredShopName.trim() || readMvuCurrentShopName(data);
     const rawShop = currentShopName ? asRecord(shopRecord[currentShopName]) : {};
     if (!currentShopName || Object.keys(rawShop).length === 0) return undefined;
 
@@ -6719,8 +6846,8 @@ export const useGameStore = defineStore('primordia', () => {
     };
   }
 
-  function applyGeneratedShopFromMvuData(data: PrimordiaStatData, options: { silent?: boolean; setLocation?: boolean } = {}) {
-    const shop = readGeneratedShopFromMvuData(data);
+  function applyGeneratedShopFromMvuData(data: PrimordiaStatData, options: { silent?: boolean; setLocation?: boolean; shopName?: string } = {}) {
+    const shop = readGeneratedShopFromMvuData(data, options.shopName);
     if (!shop) return false;
     applyGeneratedShop(shop, options);
     return true;
@@ -6983,7 +7110,17 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function applyRelationshipsFromMvuData(data: PrimordiaStatData) {
-    const relationshipRoot = readRecordPath(data, ['人物羁绊', '人物关系', '角色羁绊', '人物', '角色']);
+    const relationshipRoot = [
+      readRecordPath(data, ['人物羁绊', '人物关系', '角色羁绊']),
+      readRecordPath(data, ['人物', '角色']),
+    ].reduce<Record<string, any>>((merged, source) => {
+      Object.entries(source).forEach(([key, value]) => {
+        const current = asRecord(merged[key]);
+        const incoming = asRecord(value);
+        merged[key] = Object.keys(current).length ? { ...current, ...incoming } : value;
+      });
+      return merged;
+    }, {});
     if (Object.keys(relationshipRoot).length === 0) return false;
     let changed = false;
 
@@ -7234,13 +7371,9 @@ export const useGameStore = defineStore('primordia', () => {
     return changed;
   }
 
-  function applySceneLocationOnlyFromMvu(data: PrimordiaStatData) {
+  function readMvuPlaceText(data: PrimordiaStatData) {
     const worldLocation = readFirstPath<any>(data, legacyPathAliases('世界.当前地点'), undefined);
-    const nextRegion = String(
-      readFirstPath(data, legacyPathAliases('世界.当前地点.区域'), '') || location.region || '',
-    ).trim();
-    const mvuCurrentShopName = String(readFirstPath(data, legacyPathAliases('街坊商铺.当前商铺'), '') || '').trim();
-    const rawNextPlace = String(
+    return String(
       readFirstPath(
         data,
         [
@@ -7254,19 +7387,27 @@ export const useGameStore = defineStore('primordia', () => {
         typeof worldLocation === 'string' ? worldLocation : '',
       ) || '',
     ).trim();
+  }
+
+  function applySceneLocationOnlyFromMvu(data: PrimordiaStatData) {
+    const nextRegion = String(
+      readFirstPath(data, legacyPathAliases('世界.当前地点.区域'), '') || location.region || '',
+    ).trim();
+    const mvuCurrentShopName = readMvuCurrentShopName(data);
+    const rawNextPlace = readMvuPlaceText(data);
     const normalizedRawPlace = normalizeScenePlaceName(rawNextPlace);
     const shouldPreferShopName =
       mvuCurrentShopName &&
       (!normalizedRawPlace ||
         isGenericStreetEntrance(normalizedRawPlace) ||
-        shopNameMatchesPlace(mvuCurrentShopName, normalizedRawPlace));
+        variablePlaceMatchesShopName(mvuCurrentShopName, normalizedRawPlace));
     const nextPlace = shouldPreferShopName ? mvuCurrentShopName : rawNextPlace;
     if (nextRegion) location.region = nextRegion;
     if (!nextPlace) return false;
     const keepShop = Boolean(
       shouldPreferShopName ||
-      (mvuCurrentShopName && shopNameMatchesPlace(mvuCurrentShopName, nextPlace)) ||
-      (generatedShop.value && shopNameMatchesPlace(generatedShop.value.name, nextPlace)),
+      (mvuCurrentShopName && variablePlaceMatchesShopName(mvuCurrentShopName, nextPlace)) ||
+      (generatedShop.value && variablePlaceMatchesShopName(generatedShop.value.name, nextPlace)),
     );
     const changed = setCurrentPlace(nextPlace, { region: nextRegion || undefined, keepShop });
     if (!keepShop) clearGeneratedShop({ silent: true });
@@ -7350,6 +7491,10 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function applyMvuStatData(data: PrimordiaStatData, options: { restoreInventory?: boolean } = {}) {
+    const mvuCurrentShopName = readMvuCurrentShopName(data);
+    const mvuPlaceText = readMvuPlaceText(data);
+    currentVariableShopName.value = mvuCurrentShopName;
+    currentVariablePlaceText.value = mvuPlaceText;
     applySceneLocationOnlyFromMvu(data);
     applyTimeFromMvuData(data);
     applyCoreStatsFromMvuData(data);
@@ -7363,22 +7508,22 @@ export const useGameStore = defineStore('primordia', () => {
     }
     applyTemporaryStatesFromMvuData(data);
 
-    const mvuCurrentShopName = String(readFirstPath(data, legacyPathAliases('街坊商铺.当前商铺'), '') || '').trim();
-    const mvuShopMatchesCurrentLocation = Boolean(
-      mvuCurrentShopName && shopNameMatchesPlace(mvuCurrentShopName, currentPlaceText()),
-    );
-    const restoredShopFromMvu = mvuShopMatchesCurrentLocation
-      ? applyGeneratedShopFromMvuData(data, { silent: true, setLocation: false })
+    const shopNameFromPlace =
+      generatedShop.value && mvuPlaceText && variablePlaceMatchesShopName(generatedShop.value.name, mvuPlaceText)
+        ? generatedShop.value.name
+        : '';
+    const activeVariableShopName = mvuCurrentShopName || shopNameFromPlace;
+    const restoredShopFromMvu = mvuCurrentShopName
+      ? applyGeneratedShopFromMvuData(data, { silent: true, setLocation: false, shopName: mvuCurrentShopName })
       : false;
-    if (mvuCurrentShopName && !mvuShopMatchesCurrentLocation) {
-      clearGeneratedShop({ silent: true });
-    }
-    if (mvuShopMatchesCurrentLocation && !restoredShopFromMvu && generatedShop.value && shopNameMatchesPlace(mvuCurrentShopName, generatedShop.value.name)) {
-      setCurrentPlace(generatedShop.value.name, { keepShop: true });
-    } else if (mvuShopMatchesCurrentLocation && !restoredShopFromMvu && generatedShop.value?.name !== mvuCurrentShopName) {
+    if (mvuCurrentShopName && restoredShopFromMvu) {
+      if (!currentPlaceText().includes(mvuCurrentShopName)) setCurrentPlace(mvuCurrentShopName, { keepShop: true });
+    } else if (activeVariableShopName && generatedShop.value && variablePlaceMatchesShopName(generatedShop.value.name, activeVariableShopName)) {
+      // The exact location still comes from 世界.当前地点.具体位置; this branch only keeps the shelf active.
+    } else if (mvuCurrentShopName && generatedShop.value?.name !== mvuCurrentShopName) {
       const recoveredShop = findNearestShopBefore(undefined, mvuCurrentShopName);
       if (recoveredShop) applyGeneratedShop(recoveredShop, { silent: true });
-    } else if (!mvuCurrentShopName && !isCurrentShopLocation()) {
+    } else if (!activeVariableShopName && !isCurrentShopLocation()) {
       clearGeneratedShop({ silent: true });
     }
 
@@ -7390,30 +7535,28 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   async function writeCurrentMessageStatData(statData: PrimordiaStatData, preferredMessageId?: number) {
+    const latestAssistantMessageId =
+      preferredMessageId === undefined && typeof getChatMessages === 'function'
+        ? getChatMessages(-1, { role: 'assistant' })?.at(-1)?.message_id
+        : undefined;
+    const latestMessageId = typeof getLastMessageId === 'function' ? getLastMessageId() : undefined;
+    const currentMessageId = typeof getCurrentMessageId === 'function' ? getCurrentMessageId() : undefined;
     const messageId =
       typeof preferredMessageId === 'number'
         ? preferredMessageId
-        : typeof getCurrentMessageId === 'function'
-        ? getCurrentMessageId()
-        : typeof getLastMessageId === 'function'
-          ? getLastMessageId()
-          : undefined;
-    const target = { type: 'message', message_id: typeof messageId === 'number' ? messageId : 'latest' };
-
+        : typeof latestAssistantMessageId === 'number'
+          ? latestAssistantMessageId
+          : typeof latestMessageId === 'number'
+            ? latestMessageId
+            : typeof currentMessageId === 'number'
+              ? currentMessageId
+              : undefined;
+    const target = normalizeMessageVariableOption(messageId);
     try {
-      if (typeof Mvu !== 'undefined' && typeof Mvu.replaceMvuData === 'function' && typeof messageId === 'number') {
-        await Mvu.replaceMvuData(statData, target);
-        return true;
-      }
+      return await writePrimordiaStatData(clonePlainData(statData), target);
     } catch (error) {
-      console.warn('[primordia] Mvu.replaceMvuData 手动写变量失败:', error);
+      console.warn('[primordia] 写入楼层 stat_data 失败:', error);
     }
-
-    if (typeof updateVariablesWith === 'function') {
-      await updateVariablesWith(variables => ({ ...(variables ?? {}), stat_data: statData }), target);
-      return true;
-    }
-
     return false;
   }
 
@@ -7485,6 +7628,52 @@ export const useGameStore = defineStore('primordia', () => {
     applyMvuStatData(statData, { restoreInventory: options.restoreInventory ?? true });
     syncGeneratedShopWithLocation(options.messageId);
     return true;
+  }
+
+  function statDataWithCurrentTemporaryStates(statData: PrimordiaStatData) {
+    const nextData = clonePlainData(statData);
+    setPlainPath(nextData, '临时状态', clonePlain(temporaryStates.value));
+    return nextData;
+  }
+
+  function countInventoryItemsFromMvu(data: PrimordiaStatData, rootName: '库房' | '行囊') {
+    const root = readRecordPath(data, [rootName]);
+    return Object.values(root).reduce((sum, category) => sum + Object.keys(asRecord(category)).length, 0);
+  }
+
+  function logMvuSyncMismatches(data: PrimordiaStatData) {
+    const mismatches: string[] = [];
+    const mvuEnergy = readNumberPath(data, ['主角.精力.当前值'], undefined);
+    if (mvuEnergy !== undefined && Math.floor(mvuEnergy) !== Math.floor(energy.value)) mismatches.push(`主角精力 ${energy.value}/${mvuEnergy}`);
+    const mvuPlace = String(readFirstPath(data, ['主角.所在位置', '世界.当前地点.具体位置'], '') || '').trim();
+    if (mvuPlace && normalizeScenePlaceName(mvuPlace) !== normalizeScenePlaceName(location.place)) mismatches.push(`主角位置 ${location.place}/${mvuPlace}`);
+    const mvuRegionCount = Object.keys(readRecordPath(data, ['酒馆.区域'])).length;
+    if (mvuRegionCount && mvuRegionCount !== regions.value.length) mismatches.push(`酒馆区域 ${regions.value.length}/${mvuRegionCount}`);
+    const mvuInventoryCount = countInventoryItemsFromMvu(data, '库房');
+    if (mvuInventoryCount && mvuInventoryCount !== inventory.value.length) mismatches.push(`库房 ${inventory.value.length}/${mvuInventoryCount}`);
+    const mvuSatchelCount = countInventoryItemsFromMvu(data, '行囊');
+    if (mvuSatchelCount && mvuSatchelCount !== satchel.value.length) mismatches.push(`行囊 ${satchel.value.length}/${mvuSatchelCount}`);
+
+    for (const heroine of heroines.value) {
+      const record = asRecord(readFirstPath(data, [`人物羁绊.${heroine.name}`, `人物.${heroine.name}`], undefined));
+      if (!Object.keys(record).length) continue;
+      const mood = String(readFirstPath(record, ['心情', '状态'], '') || '').trim();
+      if (mood && mood !== heroine.mood) mismatches.push(`${heroine.name}心情 ${heroine.mood}/${mood}`);
+      const place = String(readFirstPath(record, ['所在位置', '位置'], '') || '').trim();
+      if (place && normalizeScenePlaceName(place) !== normalizeScenePlaceName(heroine.located)) mismatches.push(`${heroine.name}位置 ${heroine.located}/${place}`);
+      const tempCount = normalizeTemporaryStateList(readFirstPath(data, [`临时状态.人物.${heroine.name}`], [])).length;
+      const uiTempCount = temporaryStates.value.人物[heroine.name]?.length ?? 0;
+      if (tempCount !== uiTempCount) mismatches.push(`${heroine.name}临时状态 ${uiTempCount}/${tempCount}`);
+    }
+
+    if (mismatches.length) {
+      pushLog('系统', `MVU同步自检发现差异：${mismatches.slice(0, 6).join('；')}`, {
+        source: 'engine',
+        authoritative: true,
+        tone: 'amber',
+        actionType: 'MVU_SYNC_CHECK',
+      });
+    }
   }
 
   function loadFromMvu(options: { messageId?: number; force?: boolean } = {}) {
@@ -7732,6 +7921,8 @@ export const useGameStore = defineStore('primordia', () => {
       const result = await parseNarrativeMvuMessage(latest.fullMessage, baseData);
       if (!result.hasVariablePatch) return false;
       applyMvuStatData(result.mvuData, { restoreInventory: true });
+      await writeCurrentMessageStatData(result.mvuData, latest.messageId);
+      logMvuSyncMismatches(result.mvuData);
       syncGeneratedShopWithLocation(latest.messageId);
       return true;
     } catch (error) {
@@ -7799,8 +7990,8 @@ export const useGameStore = defineStore('primordia', () => {
     combined: string,
     options: {
       reloadMvu?: boolean;
-      onStreamingMaintext?: (text: string) => void;
       applyInventoryFromMvu?: boolean;
+      useFrontendAuthority?: boolean;
       npcActivityPlan?: TavernNpcActivityPlan | null;
       businessVisitorPlan?: TavernBusinessVisitorPlan | null;
     } = {},
@@ -7822,7 +8013,9 @@ export const useGameStore = defineStore('primordia', () => {
       const duePromiseMemoIds = duePromiseMemosForTurn.map(memo => memo.id);
       const scenePromptForRequest = appendDuePromiseMemoBlock(scenePrompt, duePromiseMemosForTurn);
       const temporaryStateKeysBeforeTurn = captureTemporaryStateKeys();
-      const authoritativeData = buildAuthoritativeRequestData(combined);
+      const authoritativeData = options.useFrontendAuthority
+        ? buildFrontendMvuSnapshot(combined)
+        : buildAuthoritativeRequestData(combined);
       const isPrebuiltNarrationPrompt = /<玩家本回合行动>|【叙述者权限边界】|【当前权威局势】|【输出格式】/.test(scenePromptForRequest);
       const prebuiltAllowsVariablePatch =
         isPrebuiltNarrationPrompt &&
@@ -7834,10 +8027,10 @@ export const useGameStore = defineStore('primordia', () => {
         authoritativeData,
         turnContextWorldbookBinding: turnContextWorldbookBinding.value,
         worldbookScanText: buildWorldbookScanPreview(),
+        enableStreamingMaintext: enableStoryStreaming.value,
         preserveNarrativeScene: canApplyScenePatch,
         allowGeneratedInventory: canApplyInventoryPatch,
         allowGeneratedStats: canApplyScenePatch,
-        onStreamingMaintext: options.onStreamingMaintext,
         onTurnContextWorldbookWritten: binding => {
           turnContextWorldbookBinding.value = clonePlain(binding);
           turnContextWorldbookStatus.value = `最近写入：${new Date(binding.updatedAt ?? Date.now()).toLocaleString()} · ${binding.worldbookName} · uid ${binding.uid}`;
@@ -7864,20 +8057,25 @@ export const useGameStore = defineStore('primordia', () => {
       });
 
       if (result.ok) {
+        let finalMvuData = result.mvuData
+          ? clonePlainData(result.mvuData)
+          : options.useFrontendAuthority
+            ? clonePlainData(authoritativeData)
+            : null;
+        if (finalMvuData && result.latest?.shop) {
+          persistParsedShopIntoMvuData(finalMvuData, result.latest.shop);
+        }
         const sceneUpdatedFromMvu =
-          result.mvuData && canApplyScenePatch
-            ? applySceneLocationOnlyFromMvu(result.mvuData)
+          finalMvuData && canApplyScenePatch
+            ? applySceneLocationOnlyFromMvu(finalMvuData)
             : false;
         if (result.mvuData && canApplyScenePatch && (sceneUpdatedFromMvu || result.hasScenePatch)) syncGeneratedShopWithLocation();
-        if (result.mvuData) {
-          applyTimeFromMvuData(result.mvuData);
-          applyCoreStatsFromMvuData(result.mvuData);
-          applyTavernStructureFromMvuData(result.mvuData);
-          applyRelationshipsFromMvuData(result.mvuData);
-          applyFarmBrewFromMvuData(result.mvuData);
-          const inventorySynced = applyInventoryPatch && applyInventoryFromMvuData(result.mvuData);
-          const satchelSynced = applyInventoryPatch && applySatchelFromMvuData(result.mvuData);
-          const temporaryStatesSynced = applyTemporaryStatesFromMvuData(result.mvuData);
+        if (finalMvuData) {
+          applyMvuStatData(finalMvuData, { restoreInventory: true });
+          const inventorySynced = applyInventoryPatch;
+          const satchelSynced = applyInventoryPatch;
+          const temporaryStatesSynced = applyTemporaryStatesFromMvuData(finalMvuData);
+          await writeCurrentMessageStatData(finalMvuData, result.latest?.messageId);
           if (inventorySynced || satchelSynced) {
             pushLog('系统', `${inventorySynced && satchelSynced ? '库房与行囊' : inventorySynced ? '库房' : '行囊'}已按本回合变量/MVU结果同步。`, {
               source: 'ai',
@@ -7894,6 +8092,7 @@ export const useGameStore = defineStore('primordia', () => {
               actionType: 'MVU_TEMPORARY_STATE_SYNC',
             });
           }
+          logMvuSyncMismatches(finalMvuData);
         }
         if (result.latest?.craftResult) applyCraftResult(result.latest.craftResult);
         if (result.latest?.guestUpdates?.length) applyGuestUpdates(result.latest.guestUpdates, successfulNarrationTurn.value + 1);
@@ -7902,18 +8101,11 @@ export const useGameStore = defineStore('primordia', () => {
         if (result.latest?.characterBehaviorUpdates?.length) {
           await applyCharacterBehaviorUpdates(result.latest.characterBehaviorUpdates, completedTurn);
         }
-        if (result.latest?.shop && promptAcceptsGeneratedShop(scenePrompt)) {
+        if (result.latest?.shop) {
           applyGeneratedShop(result.latest.shop);
           currentTab.value = 'shop';
         } else if (!result.latest?.shop && result.mvuData && promptAcceptsGeneratedShop(scenePrompt)) {
           if (applyGeneratedShopFromMvuData(result.mvuData)) currentTab.value = 'shop';
-        } else if (result.latest?.shop) {
-          pushLog('提示', '本回合不是生成商铺动作，已忽略回复里的商铺隐藏块，避免旧货架覆盖当前场景。', {
-            source: 'engine',
-            authoritative: true,
-            tone: 'amber',
-          });
-          if (!isCurrentShopLocation()) clearGeneratedShop({ silent: true });
         } else if (sceneUpdatedFromMvu && !isCurrentShopLocation()) clearGeneratedShop({ silent: true });
         commitTavernNpcActivityPlan(options.npcActivityPlan ?? null, completedTurn);
         commitManualWorkerAssignNpcActivities(completedTurn);
@@ -7921,7 +8113,10 @@ export const useGameStore = defineStore('primordia', () => {
         markPromiseMemosTriggered(duePromiseMemoIds, completedTurn);
         const temporaryStatesTicked = decrementExistingTemporaryStates(temporaryStateKeysBeforeTurn);
         if (temporaryStatesTicked) {
-          await writeCurrentMessageStatData(buildFrontendMvuSnapshot('本回合临时状态倒计时'), result.latest?.messageId);
+          const countdownBase = finalMvuData ?? getAuthoritativeMvuData(result.latest?.messageId, '本回合临时状态倒计时');
+          finalMvuData = statDataWithCurrentTemporaryStates(countdownBase);
+          await writeCurrentMessageStatData(finalMvuData, result.latest?.messageId);
+          applyTemporaryStatesFromMvuData(finalMvuData);
         }
         successfulNarrationTurn.value = completedTurn;
         clearActionDraft();
@@ -7956,7 +8151,7 @@ export const useGameStore = defineStore('primordia', () => {
     }
   }
 
-  async function sendActionDraft(options: { reloadMvu?: boolean; onStreamingMaintext?: (text: string) => void } = {}) {
+  async function sendActionDraft(options: { reloadMvu?: boolean } = {}) {
     if (isGenerating.value) return;
     if (!actionDraft.value.trim() && !playerInput.value.trim()) return;
     lastTickAt.value = Date.now();
@@ -8072,6 +8267,7 @@ export const useGameStore = defineStore('primordia', () => {
       return submitNarrationPrompt(prompt, combinedFact, {
         reloadMvu: !preserveLocalState,
         applyInventoryFromMvu: !preserveLocalState,
+        useFrontendAuthority: preserveLocalState,
         npcActivityPlan,
         businessVisitorPlan,
       });
@@ -8095,6 +8291,7 @@ export const useGameStore = defineStore('primordia', () => {
     dateText,
     clockText,
     sendWeatherToAi,
+    enableStoryStreaming,
     lastTickAt,
     lastShopRefreshDay,
     location,
@@ -8146,6 +8343,7 @@ export const useGameStore = defineStore('primordia', () => {
     openingRequired,
     openingCompleted,
     openingSave,
+    openingWorkshopEnabled,
     shouldShowOpeningWorkshop,
     characterWorldbookBindings,
     characterBehaviorLibraries,
@@ -8161,7 +8359,6 @@ export const useGameStore = defineStore('primordia', () => {
     actionDraft,
     playerInput,
     isGenerating,
-    streamMaintext,
     loadedStoryCheckpoint,
     saveMigrationStatus,
     currentTab,
@@ -8253,6 +8450,7 @@ export const useGameStore = defineStore('primordia', () => {
     runReadonlyHealthCheck,
     buildCurrentScenePrompt,
     buildFrontendMvuSnapshot,
+    getAuthoritativeMvuData,
     setFrontendMvuValue,
     setFrontendMvuData,
     syncFrontendFromMessageMvu,

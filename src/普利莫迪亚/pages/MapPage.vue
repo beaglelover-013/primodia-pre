@@ -39,6 +39,12 @@ const routeGroups = computed(() => {
   return Object.values(groups).filter(group => group.nodes.length > 0);
 });
 const selectedIsCurrentNeighbor = computed(() => !!current.value && !!selected.value && current.value.neighbors.includes(selected.value.id));
+function shouldShowNodeLabel(node: MapNode) {
+  if (node.id === game.currentMapId) return true;
+  if (node.id === selected.value?.id) return true;
+  if (node.id === hoverId.value) return true;
+  return Boolean(selected.value?.neighbors.includes(node.id));
+}
 const mapBounds = computed(() => {
   const xs = game.mapNodes.map(n => n.x);
   const ys = game.mapNodes.map(n => n.y);
@@ -584,7 +590,7 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
               </g>
               <circle v-if="item.node.id === game.currentMapId" r="3.6" fill="none" stroke="#f3da90" stroke-width="0.3" filter="url(#goldGlow)" />
               <circle v-if="item.node.id === selected?.id" r="4.3" fill="none" stroke="rgba(67, 38, 14, 0.7)" stroke-width="0.22" stroke-dasharray="0.5 0.45" />
-              <text :y="-4.2" text-anchor="middle" class="node-label">{{ item.node.name }}</text>
+              <text v-if="shouldShowNodeLabel(item.node)" :y="-4.2" text-anchor="middle" class="node-label">{{ item.node.name }}</text>
             </g>
           </g>
 
@@ -694,7 +700,7 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
         </div>
         <div class="side-card pm-card">
           <h3>交通图层</h3>
-          <p v-if="mapLayer === 'roads'" class="pm-empty">当前显示普通道路。切到商路或水路后，可以看整条主干线连接了哪些城市。</p>
+          <p v-if="mapLayer === 'roads'" class="pm-empty">当前显示普通道路。切到商路或水路后，可以看主干线，但不展开整条城市名单。</p>
           <div v-else class="traffic-route-list">
             <div v-for="route in visibleTrafficRoutes" :key="route.id" class="traffic-route-item">
               <div class="traffic-route-head">
@@ -702,7 +708,7 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
                 <strong>{{ route.name }}</strong>
                 <em>{{ route.routeType }}</em>
               </div>
-              <p>{{ route.nodes.join(' → ') }}</p>
+              <p>共 {{ route.nodes.length }} 个节点。只在选中相关城市时展开局部信息。</p>
             </div>
           </div>
         </div>
