@@ -10,11 +10,24 @@ import {
   isWorldbookApiAvailable,
   loadActiveWorldbookEntries,
   loadWorldbookEntry,
+  loadWorldbookEntryByName,
   saveWorldbookEntry,
   stringifyEntryJson,
   type EditableWorldbookEntry,
   type WorldbookEntrySearchItem,
 } from '../services/worldbookService';
+import {
+  appendCapturedWardrobe,
+  describeWardrobeEntry,
+  ensureCharacterWardrobeEntries,
+  generateWardrobeOutfit,
+  loadCharacterWardrobeLibrary,
+  saveVisibleWardrobeOutfit,
+  wardrobeItemCount,
+  wardrobeLibraryEntryName,
+  wardrobeVisibleEntryName,
+  type WardrobeLibrary,
+} from '../services/wardrobeWorldbook';
 
 const game = useGameStore();
 const giftCosts = { 橙皮陈酿: 180, 泥金蜂蜜小罐: 1_500, 银烛台: 5_400 } as const;
@@ -30,6 +43,7 @@ const selectedWorldbookBindings = computed(() => (selected.value ? (game.charact
 const selectedBehaviorLibrary = computed(() => (selected.value ? game.characterBehaviorLibraries[selected.value.id] ?? null : null));
 const pendingCharacterDelete = ref<Heroine | null>(null);
 const pendingBehaviorDelete = ref<{ id: string; behavior: string } | null>(null);
+const selectedBehaviorId = ref('');
 const cgRatingTab = ref<'sfw' | 'nsfw'>('sfw');
 const selectedBehaviorGroups = computed(() => {
   const library = selectedBehaviorLibrary.value;
@@ -41,6 +55,14 @@ const selectedBehaviorGroups = computed(() => {
   }
   if (library.unlocatedBehaviors.length) groups.set('未定位行为', library.unlocatedBehaviors);
   return [...groups.entries()].map(([region, items]) => ({ region, items }));
+});
+const selectedBehaviorItem = computed(() => {
+  if (!selectedBehaviorId.value) return null;
+  for (const group of selectedBehaviorGroups.value) {
+    const item = group.items.find(behavior => behavior.id === selectedBehaviorId.value);
+    if (item) return { ...item, groupRegion: group.region };
+  }
+  return null;
 });
 const selectedCgSlots = computed(() => {
   if (!selected.value) return [];
@@ -65,6 +87,7 @@ function temporaryStatesForHeroine(h: Heroine): TemporaryStateDisplay[] {
 
 watch(selectedId, () => {
   cgRatingTab.value = 'sfw';
+  selectedBehaviorId.value = '';
 });
 
 function hpPhase(h: Heroine) {
@@ -156,6 +179,14 @@ const createOpen = ref(false);
 const createWorldbookName = ref('');
 const createEntryName = ref('');
 const createEntryContent = ref('');
+const wardrobeWorldbookName = ref('');
+const wardrobeCaptureText = ref('');
+const wardrobeLoading = ref(false);
+const wardrobeError = ref('');
+const wardrobeNotice = ref('');
+const wardrobeLibrary = ref<WardrobeLibrary>({});
+const wardrobeLibraryEntryLabel = ref('尚未读取');
+const wardrobeVisibleEntryLabel = ref('尚未读取');
 const behaviorRegion = ref('');
 const behaviorText = ref('');
 const behaviorFeel = ref('');
@@ -182,9 +213,24 @@ const boundWorldbookCards = computed(() =>
       null,
   })),
 );
+const wardrobeCategoryStats = computed(() =>
+  Object.entries(wardrobeLibrary.value)
+    .map(([category, items]) => ({ category, count: items.length }))
+    .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category, 'zh-Hans-CN')),
+);
+const wardrobeTotalCount = computed(() => wardrobeItemCount(wardrobeLibrary.value));
 
 function bindingCacheKey(worldbookName: string, uid: number) {
   return `${worldbookName}::${uid}`;
+}
+
+function defaultWardrobeWorldbookName() {
+  return wardrobeWorldbookName.value || activeWorldbooks.value[0]?.name || '';
+}
+
+function ensureWardrobeWorldbookName() {
+  if (!wardrobeWorldbookName.value) wardrobeWorldbookName.value = defaultWardrobeWorldbookName();
+  return wardrobeWorldbookName.value;
 }
 
 async function refreshBoundWorldbookEntries() {
@@ -219,7 +265,22 @@ watch(
   heroineId => {
     if (!heroineId) return;
     behaviorRegion.value = selected.value?.located ?? '';
+    wardrobeWorldbookName.value = defaultWardrobeWorldbookName();
+    wardrobeCaptureText.value = '';
+    wardrobeError.value = '';
+    wardrobeNotice.value = '';
+    wardrobeLibrary.value = {};
+    wardrobeLibraryEntryLabel.value = '尚未读取';
+    wardrobeVisibleEntryLabel.value = '尚未读取';
     if (!game.characterBehaviorLibraries[heroineId]) void game.loadCharacterBehaviorLibraryForHeroine(heroineId);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => activeWorldbooks.value.map(book => book.name).join('|'),
+  () => {
+    if (!wardrobeWorldbookName.value) wardrobeWorldbookName.value = activeWorldbooks.value[0]?.name ?? '';
   },
   { immediate: true },
 );
@@ -240,6 +301,122 @@ async function addBehaviorLibraryItem() {
   });
   behaviorText.value = '';
   behaviorFeel.value = '';
+}
+
+async function createWardrobeForSelected() {
+  if (!selected.value) return;
+  const worldbookName = ensureWardrobeWorldbookName();
+  if (!worldbookName) {
+    wardrobeError.value = '请先选择目标世界书。';
+    return;
+  }
+  wardrobeLoading.value = true;
+  wardrobeError.value = '';
+  wardrobeNotice.value = '';
+  try {
+    const result = await ensureCharacterWardrobeEntries(worldbookName, selected.value.name);
+    await game.bindCharacterWorldbookEntry(selected.value.id, {
+      worldbookName,
+      uid: result.libraryEntry.uid,
+      label: wardrobeLibraryEntryName(selected.value.name),
+    });
+    await game.bindCharacterWorldbookEntry(selected.value.id, {
+      worldbookName,
+      uid: result.visibleEntry.uid,
+      label: wardrobeVisibleEntryName(selected.value.name),
+    });
+    wardrobeLibraryEntryLabel.value = describeWardrobeEntry(result.libraryEntry);
+    wardrobeVisibleEntryLabel.value = describeWardrobeEntry(result.visibleEntry);
+    wardrobeLibrary.value = {};
+    wardrobeNotice.value = `已创建/绑定 ${selected.value.name} 的衣柜库和今日穿搭条目。`;
+    await refreshWorldbookEntries();
+  } catch (error) {
+    wardrobeError.value = error instanceof Error ? error.message : '创建衣柜条目失败。';
+  } finally {
+    wardrobeLoading.value = false;
+  }
+}
+
+async function refreshWardrobeForSelected() {
+  if (!selected.value) return;
+  const worldbookName = ensureWardrobeWorldbookName();
+  if (!worldbookName) {
+    wardrobeError.value = '请先选择目标世界书。';
+    return;
+  }
+  wardrobeLoading.value = true;
+  wardrobeError.value = '';
+  wardrobeNotice.value = '';
+  try {
+    const loaded = await loadCharacterWardrobeLibrary(worldbookName, selected.value.name);
+    wardrobeLibrary.value = loaded.library;
+    wardrobeLibraryEntryLabel.value = describeWardrobeEntry(loaded.entry);
+    const visible = await loadWorldbookEntryByName(worldbookName, wardrobeVisibleEntryName(selected.value.name));
+    wardrobeVisibleEntryLabel.value = visible ? describeWardrobeEntry(visible) : wardrobeVisibleEntryName(selected.value.name);
+    wardrobeNotice.value = `已读取衣柜库：${wardrobeTotalCount.value} 件。`;
+  } catch (error) {
+    wardrobeError.value = error instanceof Error ? error.message : '读取衣柜失败。';
+  } finally {
+    wardrobeLoading.value = false;
+  }
+}
+
+async function captureWardrobeForSelected() {
+  if (!selected.value || !wardrobeCaptureText.value.trim()) return;
+  const worldbookName = ensureWardrobeWorldbookName();
+  if (!worldbookName) {
+    wardrobeError.value = '请先选择目标世界书。';
+    return;
+  }
+  wardrobeLoading.value = true;
+  wardrobeError.value = '';
+  wardrobeNotice.value = '';
+  try {
+    const result = await appendCapturedWardrobe(worldbookName, selected.value.name, wardrobeCaptureText.value);
+    wardrobeLibrary.value = result.library;
+    wardrobeLibraryEntryLabel.value = describeWardrobeEntry(result.entry);
+    wardrobeNotice.value = `捕捉到 ${result.capturedCount} 件，新增 ${result.addedCount} 件到衣柜库。`;
+    wardrobeCaptureText.value = '';
+    await refreshWorldbookEntries();
+  } catch (error) {
+    wardrobeError.value = error instanceof Error ? error.message : '捕捉衣服失败。';
+  } finally {
+    wardrobeLoading.value = false;
+  }
+}
+
+async function generateTodayWardrobeForSelected(reroll = false) {
+  if (!selected.value) return;
+  const worldbookName = ensureWardrobeWorldbookName();
+  if (!worldbookName) {
+    wardrobeError.value = '请先选择目标世界书。';
+    return;
+  }
+  wardrobeLoading.value = true;
+  wardrobeError.value = '';
+  wardrobeNotice.value = '';
+  try {
+    const loaded = await loadCharacterWardrobeLibrary(worldbookName, selected.value.name);
+    wardrobeLibrary.value = loaded.library;
+    if (wardrobeItemCount(loaded.library) === 0) throw new Error('衣柜库为空，请先捕捉或添加衣服。');
+    const outfit = generateWardrobeOutfit({
+      characterName: selected.value.name,
+      library: loaded.library,
+      dateLabel: game.dateText,
+      daySerial: game.currentCalendarDay(),
+      weatherText: game.calendar.weather,
+      rerollSalt: reroll ? String(Date.now()) : '',
+    });
+    const entry = await saveVisibleWardrobeOutfit(worldbookName, selected.value.name, outfit);
+    wardrobeVisibleEntryLabel.value = describeWardrobeEntry(entry);
+    await game.setFrontendMvuValue(`人物羁绊.${selected.value.name}.一句话穿着`, outfit.summary);
+    wardrobeNotice.value = `${reroll ? '已重抽' : '已生成'}今日穿搭：${outfit.summary}`;
+    await refreshWorldbookEntries();
+  } catch (error) {
+    wardrobeError.value = error instanceof Error ? error.message : '生成今日穿搭失败。';
+  } finally {
+    wardrobeLoading.value = false;
+  }
 }
 
 async function editBehaviorLibraryItem(item: { id: string; behavior: string; region: string; protagonistFeel: string }) {
@@ -580,25 +757,41 @@ async function createWorldbookEntryForSelected() {
             <div v-if="selectedBehaviorGroups.length === 0" class="pm-empty mini">
               暂无行为记忆。AI 学到稳定习惯后会自动写入，也可以在下面手动添加。
             </div>
-            <div v-else class="behavior-group-list">
+            <div v-else class="behavior-group-list compact">
               <section v-for="group in selectedBehaviorGroups" :key="group.region" class="behavior-group">
                 <header>
                   <strong>{{ group.region }}</strong>
                   <span class="pm-tag dim">{{ group.items.length }} 条</span>
                 </header>
-                <article v-for="item in group.items" :key="item.id" class="behavior-item">
-                  <p>{{ item.behavior }}</p>
-                  <small v-if="item.protagonistFeel">主角可感受到：{{ item.protagonistFeel }}</small>
-                  <footer>
-                    <button class="pm-btn sm ghost" @click="editBehaviorLibraryItem(item)">
-                      <PmIcon name="scroll" :size="12" /> 编辑
-                    </button>
-                    <button class="pm-btn sm danger" @click="deleteBehaviorLibraryItem(item)">
-                      <PmIcon name="x" :size="12" /> 删除
-                    </button>
-                  </footer>
-                </article>
+                <div class="behavior-chip-grid">
+                  <button
+                    v-for="item in group.items"
+                    :key="item.id"
+                    class="behavior-chip"
+                    :class="{ active: selectedBehaviorId === item.id }"
+                    type="button"
+                    @click="selectedBehaviorId = selectedBehaviorId === item.id ? '' : item.id"
+                  >
+                    {{ item.behavior }}
+                  </button>
+                </div>
               </section>
+              <article v-if="selectedBehaviorItem" class="behavior-detail">
+                <header>
+                  <span>{{ selectedBehaviorItem.groupRegion }}</span>
+                  <button class="behavior-detail-close" type="button" @click="selectedBehaviorId = ''">×</button>
+                </header>
+                <p>{{ selectedBehaviorItem.behavior }}</p>
+                <small v-if="selectedBehaviorItem.protagonistFeel">主角可感受到：{{ selectedBehaviorItem.protagonistFeel }}</small>
+                <footer>
+                  <button class="pm-btn sm ghost" @click="editBehaviorLibraryItem(selectedBehaviorItem)">
+                    <PmIcon name="scroll" :size="12" /> 编辑
+                  </button>
+                  <button class="pm-btn sm danger" @click="deleteBehaviorLibraryItem(selectedBehaviorItem)">
+                    <PmIcon name="x" :size="12" /> 删除
+                  </button>
+                </footer>
+              </article>
             </div>
             <div class="behavior-form">
               <input v-model="behaviorRegion" class="pm-input" placeholder="区域，例如：主厅接待区" />
@@ -651,6 +844,60 @@ async function createWorldbookEntryForSelected() {
                   </button>
                 </footer>
               </article>
+            </div>
+          </template>
+          <div v-else class="pm-empty mini">先选择一位配角。</div>
+        </div>
+
+        <div class="side-card pm-card wardrobe-card">
+          <h3>衣柜 · {{ selected?.name ?? '未选择' }}</h3>
+          <template v-if="selected">
+            <p class="pm-dim">
+              前端维护完整衣柜库；AI 只读取「{{ selected.name }}_衣柜」里的今日一套穿搭。
+            </p>
+            <div v-if="wardrobeError" class="worldbook-error">{{ wardrobeError }}</div>
+            <p v-if="wardrobeNotice" class="edit-notice">{{ wardrobeNotice }}</p>
+            <label class="pm-field">
+              <span>目标世界书</span>
+              <select v-model="wardrobeWorldbookName" class="pm-input" :disabled="wardrobeLoading">
+                <option v-for="book in activeWorldbooks" :key="book.name" :value="book.name">
+                  {{ book.name }} · {{ book.sources.join('、') }}
+                </option>
+              </select>
+            </label>
+            <div class="wardrobe-entry-status">
+              <span><b>衣柜库</b>{{ wardrobeLibraryEntryLabel }}</span>
+              <span><b>今日穿搭</b>{{ wardrobeVisibleEntryLabel }}</span>
+            </div>
+            <div class="card-actions wardrobe-actions">
+              <button class="pm-btn sm" :disabled="wardrobeLoading || !worldbookApiReady || !wardrobeWorldbookName" @click="createWardrobeForSelected">
+                <PmIcon name="plus" :size="12" /> 创建/绑定
+              </button>
+              <button class="pm-btn sm ghost" :disabled="wardrobeLoading || !worldbookApiReady || !wardrobeWorldbookName" @click="refreshWardrobeForSelected">
+                <PmIcon name="check" :size="12" /> 读取衣柜
+              </button>
+            </div>
+            <div class="wardrobe-stats">
+              <span class="pm-tag gold">共 {{ wardrobeTotalCount }} 件</span>
+              <span v-for="item in wardrobeCategoryStats" :key="item.category" class="pm-tag dim">
+                {{ item.category }} {{ item.count }}
+              </span>
+            </div>
+            <textarea
+              v-model="wardrobeCaptureText"
+              class="pm-textarea wardrobe-capture"
+              placeholder="粘贴同类型衣柜格式，例如 <WORLD_main_characters_橘柒_衣柜> ... </WORLD_main_characters_橘柒_衣柜>"
+            ></textarea>
+            <div class="card-actions wardrobe-actions">
+              <button class="pm-btn sm" :disabled="wardrobeLoading || !wardrobeCaptureText.trim()" @click="captureWardrobeForSelected">
+                <PmIcon name="plus" :size="12" /> 捕捉衣服
+              </button>
+              <button class="pm-btn sm dark" :disabled="wardrobeLoading || wardrobeTotalCount === 0" @click="generateTodayWardrobeForSelected(false)">
+                <PmIcon name="check" :size="12" /> 生成今日穿搭
+              </button>
+              <button class="pm-btn sm ghost" :disabled="wardrobeLoading || wardrobeTotalCount === 0" @click="generateTodayWardrobeForSelected(true)">
+                <PmIcon name="refresh" :size="12" /> 重抽
+              </button>
             </div>
           </template>
           <div v-else class="pm-empty mini">先选择一位配角。</div>
@@ -1340,7 +1587,8 @@ async function createWorldbookEntryForSelected() {
 }
 
 .behavior-card,
-.worldbook-card {
+.worldbook-card,
+.wardrobe-card {
   display: grid;
   gap: 8px;
 }
@@ -1353,6 +1601,9 @@ async function createWorldbookEntryForSelected() {
   max-height: 320px;
   overflow: auto;
   padding-right: 4px;
+}
+.behavior-group-list.compact {
+  gap: 7px;
 }
 .behavior-group {
   display: grid;
@@ -1372,6 +1623,77 @@ async function createWorldbookEntryForSelected() {
   color: var(--pm-ink);
   font-family: var(--pm-font-display);
   font-size: calc(13px * var(--pm-text-scale));
+}
+.behavior-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.behavior-chip {
+  max-width: 100%;
+  border: 1px solid rgba(112, 81, 30, 0.34);
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: linear-gradient(180deg, rgba(255, 250, 222, 0.9), rgba(221, 195, 121, 0.52));
+  color: var(--pm-ink-soft);
+  font: inherit;
+  font-size: calc(11.5px * var(--pm-text-scale));
+  line-height: 1.35;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.44);
+}
+.behavior-chip:hover,
+.behavior-chip.active {
+  border-color: rgba(112, 81, 30, 0.68);
+  background: linear-gradient(180deg, rgba(245, 217, 135, 0.95), rgba(151, 106, 42, 0.84));
+  color: #2c1c08;
+}
+.behavior-detail {
+  display: grid;
+  gap: 6px;
+  position: sticky;
+  bottom: 0;
+  padding: 8px;
+  border: 1px solid rgba(110, 80, 34, 0.4);
+  border-radius: 7px;
+  background: rgba(255, 248, 226, 0.96);
+  box-shadow: 0 -8px 18px rgba(60, 38, 12, 0.08);
+}
+.behavior-detail header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--pm-ink-dim);
+  font-size: calc(11px * var(--pm-text-scale));
+}
+.behavior-detail p {
+  color: var(--pm-ink-soft);
+  font-size: calc(12px * var(--pm-text-scale));
+  line-height: 1.65;
+}
+.behavior-detail small {
+  color: var(--pm-ink-dim);
+  font-size: calc(10.5px * var(--pm-text-scale));
+  line-height: 1.5;
+}
+.behavior-detail footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.behavior-detail-close {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(110, 80, 34, 0.32);
+  border-radius: 999px;
+  background: rgba(255, 248, 226, 0.72);
+  color: var(--pm-ink-soft);
+  cursor: pointer;
 }
 .behavior-item {
   display: grid;
@@ -1404,11 +1726,39 @@ async function createWorldbookEntryForSelected() {
   border-top: 1px dashed rgba(110, 80, 34, 0.28);
 }
 .worldbook-actions,
+.wardrobe-actions,
 .worldbook-bind-toolbar {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+.wardrobe-entry-status {
+  display: grid;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px dashed rgba(110, 80, 34, 0.3);
+  border-radius: 6px;
+  background: rgba(255, 248, 226, 0.36);
+  color: var(--pm-ink-dim);
+  font-size: calc(11px * var(--pm-text-scale));
+  line-height: 1.5;
+}
+.wardrobe-entry-status b {
+  display: inline-block;
+  min-width: 64px;
+  color: var(--pm-ink);
+}
+.wardrobe-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.wardrobe-capture {
+  min-height: 150px;
+  line-height: 1.65;
+  font-family: var(--pm-font-num), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: calc(11px * var(--pm-text-scale));
 }
 .worldbook-bind-toolbar .pm-input {
   flex: 1;
@@ -1587,6 +1937,23 @@ async function createWorldbookEntryForSelected() {
   .char-side {
     position: static;
     overflow: visible;
+  }
+  .behavior-group-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+  .behavior-chip {
+    flex: 1 1 calc(50% - 6px);
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    white-space: normal;
+    text-align: center;
+  }
+  .behavior-detail {
+    position: static;
   }
 }
 </style>

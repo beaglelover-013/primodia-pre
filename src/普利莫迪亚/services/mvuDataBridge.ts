@@ -22,7 +22,6 @@ const PRIMORDIA_ROOT_KEYS = [
   '\u4e16\u754c',
   '\u4e3b\u89d2',
   '\u9152\u9986',
-  '\u4eba\u7269',
   '\u4eba\u7269\u7f81\u7eca',
   '\u5e93\u623f',
   '\u884c\u56ca',
@@ -48,6 +47,18 @@ function looksLikePrimordiaStatData(value: unknown): value is PlainRecord {
 
 function hasPrimordiaStatDataContent(value: unknown): value is PlainRecord {
   return looksLikePrimordiaStatData(value) && Object.keys(value as PlainRecord).length > 0;
+}
+
+function canonicalizePrimordiaStatData(statData: PlainRecord): PlainRecord {
+  const next = clonePlainData(statData);
+  if (
+    next['\u4eba\u7269\u7f81\u7eca'] &&
+    typeof next['\u4eba\u7269\u7f81\u7eca'] === 'object' &&
+    !Array.isArray(next['\u4eba\u7269\u7f81\u7eca'])
+  ) {
+    delete next['\u4eba\u7269'];
+  }
+  return next;
 }
 
 async function ensureMvuInitialized(): Promise<void> {
@@ -192,7 +203,7 @@ function readExistingMvuEnvelope(option: PlainRecord): PlainRecord {
 }
 
 export async function writePrimordiaStatData(statData: PlainRecord, option: PlainRecord): Promise<boolean> {
-  const nextStatData = clonePlainData(statData);
+  const nextStatData = canonicalizePrimordiaStatData(statData);
   let wrote = false;
 
   if (typeof updateVariablesWith === 'function') {

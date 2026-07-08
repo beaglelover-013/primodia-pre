@@ -5462,7 +5462,6 @@ export const useGameStore = defineStore('primordia', () => {
             }
           : {},
       },
-      人物: relationshipSnapshot,
       人物羁绊: relationshipSnapshot,
       农田与酒窖: {
         农田: farmSnapshot,
@@ -7111,8 +7110,8 @@ export const useGameStore = defineStore('primordia', () => {
 
   function applyRelationshipsFromMvuData(data: PrimordiaStatData) {
     const relationshipRoot = [
-      readRecordPath(data, ['人物羁绊', '人物关系', '角色羁绊']),
       readRecordPath(data, ['人物', '角色']),
+      readRecordPath(data, ['人物羁绊', '人物关系', '角色羁绊']),
     ].reduce<Record<string, any>>((merged, source) => {
       Object.entries(source).forEach(([key, value]) => {
         const current = asRecord(merged[key]);
@@ -7619,6 +7618,46 @@ export const useGameStore = defineStore('primordia', () => {
       actionType: 'VARIABLE_EDIT',
     });
     return true;
+  }
+
+  async function cleanupLegacyCharacterAlias() {
+    const statData = readMessageStatData();
+    if (!statData) {
+      pushLog('系统', '没有读到当前楼层变量，无法清理旧人物字段。', {
+        source: 'engine',
+        authoritative: true,
+        tone: 'amber',
+        actionType: 'VARIABLE_EDIT',
+      });
+      return false;
+    }
+
+    const hasLegacyCharacters = Object.prototype.hasOwnProperty.call(statData, '人物');
+    const hasRelationshipCharacters =
+      statData.人物羁绊 && typeof statData.人物羁绊 === 'object' && !Array.isArray(statData.人物羁绊);
+
+    if (!hasLegacyCharacters || !hasRelationshipCharacters) {
+      pushLog('系统', '当前楼层没有需要清理的旧人物字段。', {
+        source: 'engine',
+        authoritative: true,
+        tone: 'cyan',
+        actionType: 'VARIABLE_EDIT',
+      });
+      return false;
+    }
+
+    const nextData = clonePlainData(statData);
+    delete nextData.人物;
+    applyMvuStatData(nextData, { restoreInventory: true });
+    const wroteMessage = await writeCurrentMessageStatData(nextData);
+    await writeChatSave();
+    pushLog('系统', '已清理当前楼层旧人物字段，保留正式人物羁绊。', {
+      source: 'engine',
+      authoritative: true,
+      tone: wroteMessage ? 'cyan' : 'amber',
+      actionType: 'VARIABLE_EDIT',
+    });
+    return wroteMessage;
   }
   const mvuReloadSuppressedUntil = ref(0);
 
@@ -8453,6 +8492,7 @@ export const useGameStore = defineStore('primordia', () => {
     getAuthoritativeMvuData,
     setFrontendMvuValue,
     setFrontendMvuData,
+    cleanupLegacyCharacterAlias,
     syncFrontendFromMessageMvu,
     rerollTodayWeather,
     lifePhase,

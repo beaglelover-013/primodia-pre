@@ -830,6 +830,7 @@ function mergeAuthoritativeData(
         ? mergeData(cloneData(source.人物羁绊), target.人物羁绊)
         : cloneData(source.人物羁绊);
   }
+  if (next.人物羁绊 && typeof next.人物羁绊 === 'object') delete next.人物;
 
   if (source.酒馆 && typeof source.酒馆 === 'object') {
     next.酒馆 = {

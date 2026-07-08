@@ -7,6 +7,8 @@ const game = useGameStore();
 
 const copied = ref(false);
 const saving = ref(false);
+const refreshing = ref(false);
+const cleaningLegacy = ref(false);
 const editError = ref('');
 const editNotice = ref('');
 const selectedSection = ref('世界');
@@ -93,6 +95,38 @@ function focusLeaf(leaf: LeafEntry) {
   editNotice.value = `已定位：${leaf.path}`;
 }
 
+async function reloadCurrentMvu() {
+  refreshing.value = true;
+  editError.value = '';
+  editNotice.value = '';
+  try {
+    const ok = game.loadFromMvu({ force: true });
+    resetEditor();
+    editNotice.value = ok ? '已根据当前楼层变量刷新前端数字。' : '当前楼层没有读到可用变量。';
+  } catch (error) {
+    editError.value = error instanceof Error ? error.message : '重新读取当前楼层变量失败。';
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+async function cleanupLegacyCharacters() {
+  cleaningLegacy.value = true;
+  editError.value = '';
+  editNotice.value = '';
+  try {
+    const ok = await game.cleanupLegacyCharacterAlias();
+    resetEditor();
+    editNotice.value = ok
+      ? '已清理旧人物字段，并按人物羁绊刷新前端。'
+      : '没有发现需要清理的旧人物字段。';
+  } catch (error) {
+    editError.value = error instanceof Error ? error.message : '清理旧人物字段失败。';
+  } finally {
+    cleaningLegacy.value = false;
+  }
+}
+
 async function saveVariables() {
   saving.value = true;
   editError.value = '';
@@ -133,6 +167,12 @@ async function copyVariables() {
         <div class="sub">正式变量树 · 可以直接编辑整段变量并保存到当前楼层</div>
       </div>
       <div class="head-actions">
+        <button class="pm-btn sm ghost" :disabled="refreshing || saving" @click="reloadCurrentMvu">
+          <PmIcon name="refresh" :size="12" /> {{ refreshing ? '读取中' : '重读当前楼层变量' }}
+        </button>
+        <button class="pm-btn sm ghost" :disabled="cleaningLegacy || saving" @click="cleanupLegacyCharacters">
+          <PmIcon name="check" :size="12" /> {{ cleaningLegacy ? '清理中' : '清理旧人物字段' }}
+        </button>
         <button class="pm-btn sm" @click="copyVariables">
           <PmIcon name="copy" :size="12" /> {{ copied ? '已复制' : '复制当前变量' }}
         </button>
