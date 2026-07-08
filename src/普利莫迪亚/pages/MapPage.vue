@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useGameStore, type MapNode } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 import { mapTrafficRoutes, tradeRoutes, waterRoutes, type MapTrafficRoute } from '../data/mapTraffic';
@@ -13,6 +13,8 @@ const mapCanvas = ref<SVGSVGElement | null>(null);
 const drag = reactive({ active: false, moved: false, lastX: 0, lastY: 0 });
 const selectedId = ref(game.currentMapId);
 const mapLayer = ref<'roads' | 'trade' | 'water'>('roads');
+const mobileMapMode = ref(false);
+let mobileMediaQuery: MediaQueryList | null = null;
 const current = computed(() => game.mapNodes.find(n => n.id === game.currentMapId));
 const selected = computed(() => game.mapNodes.find(n => n.id === selectedId.value) ?? current.value);
 watch(
@@ -374,7 +376,7 @@ function moveMap(dx: number, dy: number) {
   pan.y += dy;
 }
 function resetView() {
-  zoom.value = 2.4;
+  zoom.value = mobileMapMode.value ? 1.55 : 2.4;
   pan.x = 0;
   pan.y = 0;
 }
@@ -431,6 +433,24 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
   selectedId.value = n.id;
   focusNode(n);
 }
+
+function updateMobileMapMode(event?: MediaQueryListEvent | MediaQueryList) {
+  const next = Boolean(event?.matches ?? mobileMediaQuery?.matches);
+  if (next === mobileMapMode.value) return;
+  mobileMapMode.value = next;
+  resetView();
+}
+
+onMounted(() => {
+  mobileMediaQuery = window.matchMedia('(max-width: 680px)');
+  updateMobileMapMode(mobileMediaQuery);
+  mobileMediaQuery.addEventListener?.('change', updateMobileMapMode);
+});
+
+onUnmounted(() => {
+  mobileMediaQuery?.removeEventListener?.('change', updateMobileMapMode);
+  mobileMediaQuery = null;
+});
 </script>
 
 <template>
@@ -1203,15 +1223,45 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
 }
 
 @media (max-width: 680px) {
+  #page-map {
+    margin: 0;
+    border-radius: 0;
+  }
+  #page-map > .pm-paper-head {
+    display: grid;
+    gap: 8px;
+    padding: 12px 12px 10px;
+  }
+  #page-map .h-title {
+    font-size: calc(18px * var(--pm-text-scale));
+    line-height: 1.25;
+  }
+  #page-map .sub {
+    max-width: 14em;
+    line-height: 1.45;
+  }
+  #page-map .head-actions {
+    justify-content: flex-start;
+  }
+  #page-map .head-actions .pm-tag {
+    max-width: 100%;
+    white-space: normal;
+    line-height: 1.45;
+  }
+  #page-map > .pm-paper-body {
+    padding: 8px;
+  }
   .map-layout {
     gap: 10px;
   }
   .map-canvas-wrap {
     display: grid;
-    gap: 8px;
-    overflow: visible;
+    grid-template-rows: auto minmax(430px, 62vh) auto;
+    gap: 7px;
+    overflow: hidden;
     padding: 8px;
-    border-radius: 8px;
+    border-radius: 10px;
+    min-height: 520px;
   }
   .map-controls,
   .layer-ribbon {
@@ -1220,23 +1270,32 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
   }
   .map-controls {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
     padding: 6px;
     order: 1;
+    border-radius: 8px;
   }
   .map-controls button {
     min-width: 0;
-    height: 30px;
+    height: 34px;
     padding: 0 5px;
     font-size: calc(12px * var(--pm-text-scale));
   }
+  .map-controls button[title='上移'],
+  .map-controls button[title='下移'],
+  .map-controls button[title='左移'],
+  .map-controls button[title='右移'] {
+    display: none;
+  }
   .map-controls button[title='重置视野'] {
-    grid-column: span 2;
+    grid-column: span 1;
   }
   .map-controls > span {
-    grid-column: span 2;
+    grid-column: span 1;
     min-width: 0;
+    border-radius: 5px;
+    background: rgba(255, 245, 215, 0.08);
   }
   .layer-tabs {
     grid-column: 1 / -1;
@@ -1249,7 +1308,7 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
     min-width: 0;
   }
   .layer-ribbon {
-    order: 2;
+    order: 3;
     padding: 7px 8px;
     background: rgba(31, 21, 13, 0.72);
   }
@@ -1257,18 +1316,46 @@ function onNodeClick(event: MouseEvent, n: MapNode) {
     display: none;
   }
   .map-canvas {
-    order: 3;
-    aspect-ratio: 1 / 1;
-    border-radius: 6px;
+    order: 2;
+    width: 100%;
+    height: 100%;
+    min-height: 430px;
+    aspect-ratio: auto;
+    border-radius: 8px;
+    background: #c9a04a;
+  }
+  .node-label {
+    font-size: 2.9px;
+    stroke-width: 0.55;
   }
   .map-side {
     gap: 8px;
+    padding-bottom: 8px;
   }
   .side-card {
     padding: 10px;
+    border-radius: 9px;
   }
   .side-card h3 {
     margin-bottom: 6px;
+  }
+  .map-side .side-card:nth-child(n + 3) {
+    max-height: 220px;
+    overflow: auto;
+  }
+  .loc-h {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .loc-name {
+    font-size: calc(15px * var(--pm-text-scale));
+  }
+  .coord-board {
+    padding: 7px;
+  }
+  .loc-desc {
+    max-height: 7.5em;
+    overflow: auto;
   }
   .legend {
     grid-template-columns: repeat(2, minmax(0, 1fr));

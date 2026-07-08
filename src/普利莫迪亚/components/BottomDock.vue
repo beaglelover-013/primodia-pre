@@ -30,6 +30,23 @@ async function handlePlayerInputKeydown(event: KeyboardEvent) {
   await send();
 }
 
+function isMobileViewport() {
+  return window.matchMedia?.('(max-width: 760px)').matches ?? window.innerWidth <= 760;
+}
+
+function enterMobileTypingMode() {
+  if (!isMobileViewport()) return;
+  document.body.classList.add('pm-mobile-typing-mode');
+}
+
+function leaveMobileTypingMode() {
+  window.setTimeout(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest('#dock-player')) return;
+    document.body.classList.remove('pm-mobile-typing-mode');
+  }, 80);
+}
+
 async function previewBeforeSend() {
   await game.previewActionDraftBeforeSend();
 }
@@ -119,6 +136,8 @@ function logTitle(log: EngineLog) {
             :disabled="game.isGenerating"
             placeholder="你还想补充什么……"
             @keydown="handlePlayerInputKeydown"
+            @focus="enterMobileTypingMode"
+            @blur="leaveMobileTypingMode"
           ></textarea>
         </label>
         <div class="dock-actions">
@@ -475,6 +494,53 @@ function logTitle(log: EngineLog) {
   }
   .log-line {
     grid-template-columns: 92px 56px 48px 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  :global(body.pm-mobile-typing-mode) .dock {
+    max-height: none;
+    min-height: 0;
+    border-top-color: rgba(243, 220, 162, 0.18);
+    box-shadow: 0 -6px 16px -12px rgba(0, 0, 0, 0.65);
+  }
+  :global(body.pm-mobile-typing-mode) .dock::before,
+  :global(body.pm-mobile-typing-mode) .dock-logs,
+  :global(body.pm-mobile-typing-mode) .dock-head svg,
+  :global(body.pm-mobile-typing-mode) .dock-head > span,
+  :global(body.pm-mobile-typing-mode) .mobile-panel-toggle,
+  :global(body.pm-mobile-typing-mode) .draft-list,
+  :global(body.pm-mobile-typing-mode) #dock-preflight,
+  :global(body.pm-mobile-typing-mode) .dock-tips {
+    display: none !important;
+  }
+  :global(body.pm-mobile-typing-mode) .dock-input {
+    padding: 7px 8px max(8px, env(safe-area-inset-bottom));
+    gap: 5px;
+  }
+  :global(body.pm-mobile-typing-mode) .dock-head {
+    justify-content: flex-end;
+    min-height: 22px;
+  }
+  :global(body.pm-mobile-typing-mode) .dock-row {
+    grid-template-columns: minmax(0, 1fr) 86px;
+    align-items: end;
+  }
+  :global(body.pm-mobile-typing-mode) .dock-input-wrap .narrate {
+    min-height: 44px;
+    max-height: 88px;
+    padding: 8px 10px;
+    font-size: calc(13px * var(--pm-text-scale));
+  }
+  :global(body.pm-mobile-typing-mode) .dock-actions {
+    min-width: 0;
+  }
+  :global(body.pm-mobile-typing-mode) #dock-send {
+    min-height: 44px;
+    padding: 8px 8px;
+  }
+  :global(body.pm-mobile-typing-mode) #dock-send span {
+    display: inline;
   }
 }
 </style>

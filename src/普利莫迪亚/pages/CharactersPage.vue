@@ -1956,4 +1956,75 @@ async function createWorldbookEntryForSelected() {
     position: static;
   }
 }
+
+@media (max-width: 600px) {
+  #page-characters > .pm-paper-body {
+    max-height: none;
+    padding: 10px;
+  }
+  .char-layout {
+    gap: 10px;
+  }
+  .char-card,
+  .side-card {
+    padding: 10px;
+  }
+  .char-head {
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .portrait {
+    width: 42px;
+    height: 42px;
+  }
+  .char-meta h3,
+  .loc-name {
+    flex-wrap: wrap;
+    font-size: calc(15px * var(--pm-text-scale));
+  }
+  .bar-line {
+    grid-template-columns: 46px minmax(0, 1fr);
+    gap: 6px;
+  }
+  .bar-line > span:last-child {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .state-capsules {
+    padding-left: 0;
+  }
+  .char-notes p {
+    display: grid;
+    gap: 2px;
+  }
+  .char-notes b,
+  .selected-fields b {
+    min-width: 0;
+  }
+  .selected-fields span {
+    grid-template-columns: 64px minmax(0, 1fr);
+    align-items: start;
+  }
+  .stage-h,
+  .selected-temp-states,
+  .char-acts {
+    position: static;
+  }
+  .stage-h {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    line-height: 1.5;
+  }
+  .stage-list li {
+    grid-template-columns: 54px minmax(0, 1fr);
+  }
+  .char-acts .pm-btn {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: center;
+  }
+  .behavior-chip {
+    flex-basis: 100%;
+  }
+}
 </style>
