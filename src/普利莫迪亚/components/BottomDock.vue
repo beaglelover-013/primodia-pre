@@ -473,36 +473,6 @@ function logTitle(log: EngineLog) {
     padding: 8px 10px;
     font-size: calc(12px * var(--pm-text-scale));
   }
-  .dock:focus-within {
-    max-height: 132px;
-  }
-  .dock:focus-within .dock-logs,
-  .dock:focus-within .draft-list,
-  .dock:focus-within #dock-preflight,
-  .dock:focus-within .dock-tips {
-    display: none;
-  }
-  .dock:focus-within .dock-input {
-    padding: 7px 9px 8px;
-  }
-  .dock:focus-within .dock-head {
-    margin-bottom: 2px;
-  }
-  .dock:focus-within .dock-head > svg,
-  .dock:focus-within .dock-head > span,
-  .dock:focus-within .mobile-panel-toggle {
-    display: none;
-  }
-  .dock:focus-within .dock-row {
-    grid-template-columns: minmax(0, 1fr) 86px;
-  }
-  .dock:focus-within .dock-input-wrap .narrate {
-    min-height: 56px;
-    max-height: 56px;
-  }
-  .dock:focus-within .dock-actions {
-    min-width: 86px;
-  }
   .log-line {
     grid-template-columns: 92px 56px 48px 1fr;
   }

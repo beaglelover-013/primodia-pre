@@ -1,6 +1,7 @@
 type PlainRecord = Record<string, any>;
 
 declare const getVariables: ((option?: PlainRecord) => PlainRecord) | undefined;
+declare const replaceVariables: ((variables: PlainRecord, option?: PlainRecord) => void) | undefined;
 declare const updateVariablesWith:
   | ((updater: (variables: PlainRecord) => PlainRecord | void, option?: PlainRecord) => Promise<void> | void)
   | undefined;
@@ -190,36 +191,70 @@ export function readPrimordiaStatData(option: PlainRecord): PlainRecord | null {
 
 function readExistingMvuEnvelope(option: PlainRecord): PlainRecord {
   if (typeof Mvu !== 'undefined' && typeof Mvu.getMvuData === 'function') {
-    const mvuEnvelope = unwrapMvuEnvelope(Mvu.getMvuData(option));
-    if (mvuEnvelope) return mvuEnvelope;
+    try {
+      const mvuEnvelope = unwrapMvuEnvelope(Mvu.getMvuData(option));
+      if (mvuEnvelope) return mvuEnvelope;
+    } catch (error) {
+      console.warn('[primordia] 读取现有 MVU 信封失败:', error);
+    }
   }
 
   if (typeof getVariables === 'function') {
-    const variablesEnvelope = unwrapMvuEnvelope(getVariables(option));
-    if (variablesEnvelope) return variablesEnvelope;
+    try {
+      const variablesEnvelope = unwrapMvuEnvelope(getVariables(option));
+      if (variablesEnvelope) return variablesEnvelope;
+    } catch (error) {
+      console.warn('[primordia] 读取现有变量信封失败:', error);
+    }
   }
 
   return {};
 }
 
 export async function writePrimordiaStatData(statData: PlainRecord, option: PlainRecord): Promise<boolean> {
+  await ensureMvuInitialized();
   const nextStatData = canonicalizePrimordiaStatData(statData);
   let wrote = false;
+  let lastError: unknown;
 
   if (typeof updateVariablesWith === 'function') {
-    await updateVariablesWith(variables => {
-      const nextVariables = variables && typeof variables === 'object' ? { ...variables } : {};
-      nextVariables.stat_data = clonePlainData(nextStatData);
-      return nextVariables;
-    }, option);
-    wrote = true;
+    try {
+      await updateVariablesWith(variables => {
+        const nextVariables = variables && typeof variables === 'object' ? { ...variables } : {};
+        nextVariables.stat_data = clonePlainData(nextStatData);
+        return nextVariables;
+      }, option);
+      wrote = true;
+    } catch (error) {
+      lastError = error;
+      console.warn('[primordia] updateVariablesWith 写入失败，继续尝试 MVU/replaceVariables:', error);
+    }
   }
 
   if (typeof Mvu !== 'undefined' && typeof Mvu.replaceMvuData === 'function') {
-    const nextEnvelope = wrapPrimordiaMvuData(nextStatData, readExistingMvuEnvelope(option));
-    await Mvu.replaceMvuData(nextEnvelope, option);
-    wrote = true;
+    try {
+      const nextEnvelope = wrapPrimordiaMvuData(nextStatData, readExistingMvuEnvelope(option));
+      await Mvu.replaceMvuData(nextEnvelope, option);
+      wrote = true;
+    } catch (error) {
+      lastError = error;
+      console.warn('[primordia] Mvu.replaceMvuData 写入失败，继续尝试 replaceVariables:', error);
+    }
   }
 
+  if (!wrote && typeof getVariables === 'function' && typeof replaceVariables === 'function') {
+    try {
+      const currentVariables = getVariables(option);
+      const nextVariables = currentVariables && typeof currentVariables === 'object' ? { ...currentVariables } : {};
+      nextVariables.stat_data = clonePlainData(nextStatData);
+      replaceVariables(nextVariables, option);
+      wrote = true;
+    } catch (error) {
+      lastError = error;
+      console.warn('[primordia] replaceVariables 兜底写入失败:', error);
+    }
+  }
+
+  if (!wrote && lastError) throw lastError;
   return wrote;
 }

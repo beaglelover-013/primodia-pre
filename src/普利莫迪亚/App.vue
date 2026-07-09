@@ -42,6 +42,7 @@ function stopEventListeners(stops: EventOnReturn[]) {
 }
 
 async function refreshAuthoritativeState(options: { clearMissingShop?: boolean } = {}) {
+  if (game.isGenerating) return;
   if (typeof waitGlobalInitialized === 'function') {
     try {
       await Promise.race([

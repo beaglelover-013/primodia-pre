@@ -1800,11 +1800,46 @@ async function importSaveFile(event: Event) {
 }
 @media (max-width: 820px) {
   .settings-tabs {
-    grid-template-columns: 1fr;
-    padding: 0 12px 12px;
+    display: flex;
+    grid-template-columns: none;
+    gap: 6px;
+    padding: 0 10px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+  }
+  .settings-tabs::-webkit-scrollbar {
+    display: none;
   }
   .settings-tab {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-height: 0;
+    min-width: 82px;
+    padding: 7px 11px;
+    border-radius: 999px;
+    text-align: center;
+    scroll-snap-align: start;
+    white-space: nowrap;
+  }
+  .settings-tab:hover,
+  .settings-tab.active {
+    transform: none;
+  }
+  .settings-tab strong {
+    font-size: calc(12px * var(--pm-text-scale));
+    letter-spacing: 0.04em;
+  }
+  .settings-tab span {
+    display: none;
+  }
+  .settings-grid {
+    gap: 10px;
+    grid-template-columns: 1fr;
   }
   .prompt-debug-layout {
     grid-template-columns: 1fr;
