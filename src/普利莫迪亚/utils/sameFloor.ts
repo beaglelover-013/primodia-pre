@@ -74,6 +74,28 @@ function registerHostFloor(messageId: number, parentDocument = getParentDocument
   findParentFloorElement(messageId, parentDocument)?.classList.add(SAME_FLOOR_HOST_CLASS);
 }
 
+function buildSameFloorStyle(hostMessageId?: number): string {
+  if (typeof hostMessageId === 'number') {
+    return `
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes[mesid]:not([mesid="${hostMessageId}"]) {
+          display: none !important;
+        }
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes[mesid="${hostMessageId}"],
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes.${SAME_FLOOR_HOST_CLASS} {
+          display: flex !important;
+        }
+      `;
+  }
+  return `
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes[mesid]:not(.${SAME_FLOOR_HOST_CLASS}) {
+          display: none !important;
+        }
+        body.${SAME_FLOOR_BODY_CLASS} #chat .mes.${SAME_FLOOR_HOST_CLASS} {
+          display: flex !important;
+        }
+      `;
+}
+
 function hideDisplayedFloor(messageId: number, hostMessageId = getCurrentHostMessageId()) {
   if (messageId === hostMessageId || typeof retrieveDisplayedMessage !== 'function') return;
   try {
@@ -131,14 +153,7 @@ export function activateSameFloorMode(): () => void {
       style.id = SAME_FLOOR_STYLE_ID;
       parentDocument.head.append(style);
     }
-    style.textContent = `
-        body.${SAME_FLOOR_BODY_CLASS} #chat .mes[mesid]:not(.${SAME_FLOOR_HOST_CLASS}) {
-          display: none !important;
-        }
-        body.${SAME_FLOOR_BODY_CLASS} #chat .mes.${SAME_FLOOR_HOST_CLASS} {
-          display: flex !important;
-        }
-      `;
+    style.textContent = buildSameFloorStyle(hostMessageId);
     body.classList.add(SAME_FLOOR_BODY_CLASS);
   }
 

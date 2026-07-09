@@ -5441,26 +5441,7 @@ export const useGameStore = defineStore('primordia', () => {
       },
       街坊商铺: {
         当前商铺: generatedShop.value && isCurrentShopLocation(generatedShop.value.name) ? generatedShop.value.name : '',
-        商铺: generatedShop.value && isCurrentShopLocation(generatedShop.value.name)
-          ? {
-              [generatedShop.value.name]: {
-                类型: generatedShop.value.kind ?? '街坊商铺',
-                店主: generatedShop.value.keeper,
-                氛围: generatedShop.value.atmosphere ?? '',
-                招呼语: generatedShop.value.greeting ?? '',
-                今日货架: Object.fromEntries(generatedShopProducts.value.map(product => [
-                  product.name,
-                  {
-                    分类: product.category,
-                    数量: product.stock,
-                    单价折合铜币: product.priceCopper,
-                    标签: product.tags,
-                    备注: product.desc,
-                  },
-                ])),
-              },
-            }
-          : {},
+        商铺: {},
       },
       人物羁绊: relationshipSnapshot,
       农田与酒窖: {
@@ -6737,32 +6718,6 @@ export const useGameStore = defineStore('primordia', () => {
   function persistParsedShopIntoMvuData(data: PrimordiaStatData, shop: ParsedShop) {
     if (!data.街坊商铺 || typeof data.街坊商铺 !== 'object' || Array.isArray(data.街坊商铺)) data.街坊商铺 = {};
     const streetShopRoot = data.街坊商铺 as Record<string, any>;
-    if (!streetShopRoot.商铺 || typeof streetShopRoot.商铺 !== 'object' || Array.isArray(streetShopRoot.商铺)) {
-      streetShopRoot.商铺 = {};
-    }
-    const shops = streetShopRoot.商铺 as Record<string, any>;
-    const existingShop = asRecord(shops[shop.name]);
-    const firstCategory = shop.products[0]?.category ?? '杂物';
-    shops[shop.name] = {
-      ...existingShop,
-      类型: existingShop['类型'] ?? normalizeShopKind(firstCategory),
-      店主: shop.keeper || existingShop['店主'] || existingShop['掌柜'] || existingShop['老板'] || '',
-      氛围: shop.description || existingShop['氛围'] || existingShop['描述'] || '',
-      描述: shop.description || existingShop['描述'] || existingShop['氛围'] || '',
-      今日货架: Object.fromEntries(
-        shop.products.map(product => [
-          product.name,
-          {
-            名称: product.name,
-            分类: normalizeInventoryCategory(product.category),
-            单价铜币: product.priceCopper,
-            数量: product.stock,
-            标签: clonePlain(product.tags ?? []),
-            描述: product.desc ?? '',
-          },
-        ]),
-      ),
-    };
     streetShopRoot.当前商铺 = shop.name;
 
     if (!data.世界 || typeof data.世界 !== 'object' || Array.isArray(data.世界)) data.世界 = {};
@@ -6800,6 +6755,20 @@ export const useGameStore = defineStore('primordia', () => {
     const variablePlaceText = readMvuPlaceText(data);
     const shopRecord = readMvuShopRecord(data);
     return Object.keys(shopRecord).find(shopName => variablePlaceMatchesShopName(shopName, variablePlaceText)) ?? '';
+  }
+
+  function readMvuActiveShopName(data: PrimordiaStatData) {
+    const currentShopName = readMvuCurrentShopName(data);
+    const variablePlaceText = readMvuPlaceText(data);
+    if (
+      currentShopName &&
+      (!variablePlaceText ||
+        isGenericStreetEntrance(variablePlaceText) ||
+        variablePlaceMatchesShopName(currentShopName, variablePlaceText))
+    ) {
+      return currentShopName;
+    }
+    return '';
   }
 
   function readGeneratedShopFromMvuData(data: PrimordiaStatData, preferredShopName = ''): ParsedShop | undefined {
@@ -7392,7 +7361,7 @@ export const useGameStore = defineStore('primordia', () => {
     const nextRegion = String(
       readFirstPath(data, legacyPathAliases('世界.当前地点.区域'), '') || location.region || '',
     ).trim();
-    const mvuCurrentShopName = readMvuCurrentShopName(data);
+    const mvuCurrentShopName = readMvuActiveShopName(data);
     const rawNextPlace = readMvuPlaceText(data);
     const normalizedRawPlace = normalizeScenePlaceName(rawNextPlace);
     const shouldPreferShopName =
@@ -7490,7 +7459,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function applyMvuStatData(data: PrimordiaStatData, options: { restoreInventory?: boolean } = {}) {
-    const mvuCurrentShopName = readMvuCurrentShopName(data);
+    const mvuCurrentShopName = readMvuActiveShopName(data);
     const mvuPlaceText = readMvuPlaceText(data);
     currentVariableShopName.value = mvuCurrentShopName;
     currentVariablePlaceText.value = mvuPlaceText;

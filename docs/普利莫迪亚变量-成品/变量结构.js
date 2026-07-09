@@ -170,19 +170,6 @@ export const Schema = z.object({
   }),
   街坊商铺: z.object({
     当前商铺: z.string(),
-    商铺: z.record(z.string().describe('商铺名'), z.object({
-      类型: z.string(),
-      店主: z.string(),
-      氛围: z.string(),
-      招呼语: z.string(),
-      今日货架: z.record(z.string().describe('商品名'), z.object({
-        分类: z.string(),
-        数量: z.coerce.number().transform(value => Math.max(0, Math.floor(value))),
-        单价折合铜币: z.coerce.number().transform(value => Math.max(0, Math.floor(value))),
-        标签: z.array(z.string()),
-        备注: z.string(),
-      })).prefault({}),
-    })).prefault({}),
   }),
 });
 
