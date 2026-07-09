@@ -1958,11 +1958,32 @@ async function createWorldbookEntryForSelected() {
 }
 
 @media (max-width: 600px) {
+  #page-characters {
+    display: block;
+    overflow: visible;
+  }
   #page-characters > .pm-paper-body {
     max-height: none;
+    overflow: visible;
     padding: 10px;
   }
   .char-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: auto;
+    align-items: stretch;
+  }
+  .char-side {
+    order: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .char-list {
+    order: 2;
+    display: flex;
+    flex-direction: column;
     gap: 10px;
   }
   .char-card,
@@ -2025,6 +2046,15 @@ async function createWorldbookEntryForSelected() {
   }
   .behavior-chip {
     flex-basis: 100%;
+  }
+  .cg-grid-side,
+  .cg-rating-tabs,
+  .worldbook-editor-grid {
+    grid-template-columns: 1fr;
+  }
+  .worldbook-bind-toolbar .pm-input {
+    min-width: 0;
+    width: 100%;
   }
 }
 </style>
