@@ -303,6 +303,76 @@
   --pm-code-text: #f1bb74;
 }
 
+:root[data-pm-theme='iron-kettle-inn'] {
+  --pm-wood-deepest: #100906;
+  --pm-wood-dark: #1a100b;
+  --pm-wood: #26170f;
+  --pm-wood-soft: #3a2719;
+  --pm-wood-panel: #4e3623;
+  --pm-parch-bright: #f3ead8;
+  --pm-parch: #eadcc1;
+  --pm-parch-soft: #d2bd96;
+  --pm-parch-shadow: #a98858;
+  --pm-ink: #2e2017;
+  --pm-ink-soft: #513b2b;
+  --pm-ink-dim: #72583b;
+  --pm-ink-fade: #92724b;
+  --pm-gold: #b78a37;
+  --pm-gold-bright: #f2d176;
+  --pm-gold-dim: #7a5d24;
+  --pm-gold-mud: #5c401c;
+  --pm-copper: #95643a;
+  --pm-copper-dim: #614023;
+  --pm-emerald: #61794f;
+  --pm-ruby: #8f4435;
+  --pm-amber: #b9782f;
+  --pm-violet: #665073;
+  --pm-grad-parchment:
+    radial-gradient(circle at 16% 10%, rgba(255, 251, 236, 0.74), transparent 35%),
+    radial-gradient(circle at 84% 17%, rgba(244, 220, 159, 0.26), transparent 36%),
+    radial-gradient(circle at 76% 90%, rgba(82, 50, 20, 0.19), transparent 46%),
+    linear-gradient(155deg, #f3ead8, #eadcc1 55%, #d2bd96);
+  --pm-grad-gold: linear-gradient(180deg, #f2d176, #b78a37 52%, #73511d);
+  --pm-grad-gold-soft: linear-gradient(180deg, rgba(242, 209, 118, 0.84), rgba(115, 81, 29, 0.64));
+  --pm-edge: rgba(139, 104, 55, 0.58);
+  --pm-edge-strong: rgba(94, 68, 35, 0.86);
+  --pm-edge-soft: rgba(139, 104, 55, 0.28);
+  --pm-shadow-paper:
+    inset 0 1px 0 rgba(255, 250, 235, 0.62),
+    inset 0 -1px 0 rgba(81, 52, 24, 0.34),
+    0 12px 28px -12px rgba(0, 0, 0, 0.58);
+  --pm-app-bg:
+    radial-gradient(circle at 50% 20%, rgba(121, 83, 45, 0.15), transparent 36%),
+    radial-gradient(circle at 80% 78%, rgba(35, 24, 17, 0.62), transparent 42%),
+    repeating-linear-gradient(90deg, rgba(244, 226, 180, 0.014) 0 1px, transparent 1px 34px),
+    linear-gradient(180deg, #1b130f, #110b08 48%, #080504);
+  --pm-app-vignette:
+    linear-gradient(90deg, rgba(13, 7, 4, 0.9), transparent 12%, transparent 88%, rgba(13, 7, 4, 0.92)),
+    radial-gradient(ellipse at 50% 0%, rgba(236, 193, 106, 0.1), transparent 56%);
+  --pm-top-bg:
+    radial-gradient(circle at 0% 0%, rgba(234, 193, 113, 0.05), transparent 60%),
+    radial-gradient(circle at 100% 100%, rgba(142, 88, 45, 0.08), transparent 60%),
+    linear-gradient(180deg, #21140e, #150c08);
+  --pm-side-bg:
+    radial-gradient(circle at 50% 0%, rgba(160, 116, 62, 0.12), transparent 54%),
+    linear-gradient(180deg, #2a1b13, #1b110c 72%, #100906);
+  --pm-dock-bg:
+    radial-gradient(circle at 100% 0%, rgba(242, 209, 118, 0.06), transparent 60%),
+    linear-gradient(180deg, #22150d, #0b0604);
+  --pm-dark-panel: linear-gradient(180deg, rgba(38, 26, 18, 0.96), rgba(14, 9, 6, 0.98));
+  --pm-dark-panel-solid: #100b08;
+  --pm-dark-panel-soft: rgba(242, 209, 118, 0.075);
+  --pm-dark-panel-border: rgba(160, 121, 70, 0.34);
+  --pm-dark-text: #eadcc1;
+  --pm-dark-muted: rgba(231, 211, 178, 0.68);
+  --pm-dark-faint: rgba(231, 211, 178, 0.38);
+  --pm-line-bright: rgba(242, 209, 118, 0.44);
+  --pm-line-soft: rgba(242, 209, 118, 0.22);
+  --pm-line-faint: rgba(242, 209, 118, 0.12);
+  --pm-code-bg: rgba(12, 7, 4, 0.84);
+  --pm-code-text: #f2d176;
+}
+
 :root[data-pm-theme='moonlit-silver'] {
   --pm-wood-deepest: #0c0b14;
   --pm-wood-dark: #141225;
@@ -415,6 +485,182 @@
   --pm-code-text: #ffe39a;
 }
 
+:root[data-pm-theme='mithril-arcana'] {
+  --pm-wood-deepest: #081116;
+  --pm-wood-dark: #0d1b22;
+  --pm-wood: #172a33;
+  --pm-wood-soft: #243d47;
+  --pm-wood-panel: #345563;
+  --pm-parch-bright: #edf5f4;
+  --pm-parch: #dbe8e9;
+  --pm-parch-soft: #b9cfd2;
+  --pm-parch-shadow: #7e9fa8;
+  --pm-ink: #14272e;
+  --pm-ink-soft: #29434d;
+  --pm-ink-dim: #486771;
+  --pm-ink-fade: #69868e;
+  --pm-gold: #8fc7d5;
+  --pm-gold-bright: #d8f4f7;
+  --pm-gold-dim: #4c86a0;
+  --pm-gold-mud: #356477;
+  --pm-copper: #668fa0;
+  --pm-copper-dim: #3c6070;
+  --pm-emerald: #4e917f;
+  --pm-ruby: #98565f;
+  --pm-amber: #a98a55;
+  --pm-violet: #66779d;
+  --pm-grad-parchment:
+    radial-gradient(circle at 16% 8%, rgba(255, 255, 255, 0.78), transparent 34%),
+    radial-gradient(circle at 84% 18%, rgba(137, 205, 220, 0.2), transparent 38%),
+    radial-gradient(circle at 76% 92%, rgba(21, 57, 70, 0.2), transparent 46%),
+    linear-gradient(155deg, #edf5f4, #dbe8e9 54%, #b9cfd2);
+  --pm-grad-gold: linear-gradient(180deg, #d8f4f7, #8fc7d5 52%, #4c86a0);
+  --pm-grad-gold-soft: linear-gradient(180deg, rgba(216, 244, 247, 0.86), rgba(76, 134, 160, 0.66));
+  --pm-edge: rgba(89, 144, 163, 0.58);
+  --pm-edge-strong: rgba(48, 91, 107, 0.86);
+  --pm-edge-soft: rgba(102, 164, 184, 0.28);
+  --pm-app-bg:
+    radial-gradient(circle at 50% 18%, rgba(84, 156, 177, 0.18), transparent 36%),
+    repeating-linear-gradient(90deg, rgba(201, 240, 244, 0.018) 0 1px, transparent 1px 30px),
+    linear-gradient(180deg, #11242c, #09161c 48%, #050b0f);
+  --pm-app-vignette:
+    linear-gradient(90deg, rgba(4, 11, 15, 0.92), transparent 13%, transparent 87%, rgba(4, 11, 15, 0.92)),
+    radial-gradient(ellipse at 50% 0%, rgba(143, 215, 229, 0.13), transparent 56%);
+  --pm-top-bg: linear-gradient(180deg, #1b3640, #0b1a20);
+  --pm-side-bg: linear-gradient(180deg, #17303a, #0d2027 72%, #071116);
+  --pm-dock-bg: linear-gradient(180deg, #10262e, #050c10);
+  --pm-dark-panel: linear-gradient(180deg, rgba(19, 44, 53, 0.96), rgba(5, 13, 17, 0.98));
+  --pm-dark-panel-solid: #081318;
+  --pm-dark-panel-soft: rgba(143, 199, 213, 0.075);
+  --pm-dark-panel-border: rgba(105, 166, 183, 0.36);
+  --pm-dark-text: #dbe8e9;
+  --pm-dark-muted: rgba(211, 232, 235, 0.68);
+  --pm-dark-faint: rgba(211, 232, 235, 0.38);
+  --pm-line-bright: rgba(173, 226, 235, 0.46);
+  --pm-line-soft: rgba(143, 199, 213, 0.24);
+  --pm-line-faint: rgba(143, 199, 213, 0.13);
+  --pm-code-bg: rgba(3, 10, 14, 0.86);
+  --pm-code-text: #b9edf3;
+}
+
+:root[data-pm-theme='classic-parchment'] {
+  --pm-wood-deepest: #21150d;
+  --pm-wood-dark: #342317;
+  --pm-wood: #4b3422;
+  --pm-wood-soft: #6d5133;
+  --pm-wood-panel: #826442;
+  --pm-parch-bright: #f4e6c4;
+  --pm-parch: #ead5a8;
+  --pm-parch-soft: #d2b77e;
+  --pm-parch-shadow: #a78550;
+  --pm-ink: #312216;
+  --pm-ink-soft: #513a26;
+  --pm-ink-dim: #725438;
+  --pm-ink-fade: #8c6c49;
+  --pm-gold: #b58a43;
+  --pm-gold-bright: #e8ca7c;
+  --pm-gold-dim: #7f5b2b;
+  --pm-gold-mud: #61421e;
+  --pm-copper: #9a5f3b;
+  --pm-copper-dim: #653923;
+  --pm-emerald: #657a4c;
+  --pm-ruby: #8c4035;
+  --pm-amber: #b77b35;
+  --pm-violet: #72596f;
+  --pm-grad-parchment:
+    radial-gradient(circle at 13% 9%, rgba(255, 250, 224, 0.72), transparent 34%),
+    radial-gradient(circle at 86% 22%, rgba(192, 137, 65, 0.17), transparent 38%),
+    repeating-linear-gradient(0deg, rgba(89, 57, 27, 0.025) 0 1px, transparent 1px 5px),
+    linear-gradient(155deg, #f4e6c4, #ead5a8 52%, #d2b77e);
+  --pm-grad-gold: linear-gradient(180deg, #e8ca7c, #b58a43 52%, #7f5b2b);
+  --pm-grad-gold-soft: linear-gradient(180deg, rgba(232, 202, 124, 0.86), rgba(127, 91, 43, 0.66));
+  --pm-edge: rgba(139, 99, 48, 0.58);
+  --pm-edge-strong: rgba(91, 61, 29, 0.86);
+  --pm-edge-soft: rgba(139, 99, 48, 0.28);
+  --pm-app-bg:
+    radial-gradient(circle at 50% 20%, rgba(155, 111, 59, 0.18), transparent 38%),
+    repeating-linear-gradient(90deg, rgba(238, 211, 157, 0.018) 0 1px, transparent 1px 38px),
+    linear-gradient(180deg, #3b2b1e, #241810 52%, #150e09);
+  --pm-app-vignette:
+    linear-gradient(90deg, rgba(27, 17, 10, 0.9), transparent 12%, transparent 88%, rgba(27, 17, 10, 0.9)),
+    radial-gradient(ellipse at 50% 0%, rgba(225, 188, 112, 0.11), transparent 58%);
+  --pm-top-bg: linear-gradient(180deg, #4a3522, #2a1b11);
+  --pm-side-bg: linear-gradient(180deg, #493322, #302116 72%, #21150d);
+  --pm-dock-bg: linear-gradient(180deg, #352317, #180f09);
+  --pm-dark-panel: linear-gradient(180deg, rgba(65, 45, 29, 0.96), rgba(24, 15, 9, 0.98));
+  --pm-dark-panel-solid: #21160f;
+  --pm-dark-panel-soft: rgba(232, 202, 124, 0.075);
+  --pm-dark-panel-border: rgba(166, 123, 65, 0.36);
+  --pm-dark-text: #ead5a8;
+  --pm-dark-muted: rgba(232, 210, 171, 0.69);
+  --pm-dark-faint: rgba(232, 210, 171, 0.39);
+  --pm-line-bright: rgba(232, 202, 124, 0.46);
+  --pm-line-soft: rgba(210, 174, 105, 0.24);
+  --pm-line-faint: rgba(210, 174, 105, 0.13);
+  --pm-code-bg: rgba(24, 14, 8, 0.84);
+  --pm-code-text: #e8ca7c;
+}
+
+:root[data-pm-theme='crimson-empire'] {
+  --pm-wood-deepest: #0d0708;
+  --pm-wood-dark: #180a0d;
+  --pm-wood: #2a0d13;
+  --pm-wood-soft: #3b1018;
+  --pm-wood-panel: #5a1825;
+  --pm-parch-bright: #f2e7d9;
+  --pm-parch: #e8d8c1;
+  --pm-parch-soft: #ccb698;
+  --pm-parch-shadow: #9e8060;
+  --pm-ink: #2d1719;
+  --pm-ink-soft: #53282e;
+  --pm-ink-dim: #743e46;
+  --pm-ink-fade: #8f5b60;
+  --pm-gold: #c19a4b;
+  --pm-gold-bright: #efd486;
+  --pm-gold-dim: #89662e;
+  --pm-gold-mud: #67471e;
+  --pm-copper: #a25745;
+  --pm-copper-dim: #6e342e;
+  --pm-emerald: #58775b;
+  --pm-ruby: #861f32;
+  --pm-ruby-soft: #e2aab1;
+  --pm-amber: #b77d36;
+  --pm-violet: #70435f;
+  --pm-grad-parchment:
+    radial-gradient(circle at 14% 8%, rgba(255, 251, 239, 0.7), transparent 34%),
+    radial-gradient(circle at 85% 18%, rgba(168, 92, 74, 0.14), transparent 38%),
+    radial-gradient(circle at 78% 92%, rgba(91, 22, 34, 0.17), transparent 46%),
+    linear-gradient(155deg, #f2e7d9, #e8d8c1 54%, #ccb698);
+  --pm-grad-gold: linear-gradient(180deg, #efd486, #c19a4b 52%, #89662e);
+  --pm-grad-gold-soft: linear-gradient(180deg, rgba(239, 212, 134, 0.86), rgba(137, 102, 46, 0.66));
+  --pm-edge: rgba(149, 93, 54, 0.58);
+  --pm-edge-strong: rgba(93, 43, 34, 0.88);
+  --pm-edge-soft: rgba(154, 77, 60, 0.28);
+  --pm-app-bg:
+    radial-gradient(circle at 50% 18%, rgba(126, 26, 44, 0.2), transparent 38%),
+    radial-gradient(circle at 80% 80%, rgba(58, 10, 18, 0.52), transparent 42%),
+    repeating-linear-gradient(90deg, rgba(239, 212, 134, 0.014) 0 1px, transparent 1px 34px),
+    linear-gradient(180deg, #220b11, #13070a 50%, #080405);
+  --pm-app-vignette:
+    linear-gradient(90deg, rgba(9, 4, 5, 0.94), transparent 13%, transparent 87%, rgba(9, 4, 5, 0.94)),
+    radial-gradient(ellipse at 50% 0%, rgba(180, 41, 62, 0.13), transparent 56%);
+  --pm-top-bg: linear-gradient(180deg, #3b1018, #19080c);
+  --pm-side-bg: linear-gradient(180deg, #361019, #200a10 72%, #0d0708);
+  --pm-dock-bg: linear-gradient(180deg, #2b0c13, #090405);
+  --pm-dark-panel: linear-gradient(180deg, rgba(49, 14, 22, 0.96), rgba(11, 5, 7, 0.98));
+  --pm-dark-panel-solid: #13070a;
+  --pm-dark-panel-soft: rgba(193, 154, 75, 0.075);
+  --pm-dark-panel-border: rgba(149, 91, 63, 0.36);
+  --pm-dark-text: #e8d8c1;
+  --pm-dark-muted: rgba(231, 211, 190, 0.68);
+  --pm-dark-faint: rgba(231, 211, 190, 0.38);
+  --pm-line-bright: rgba(239, 212, 134, 0.46);
+  --pm-line-soft: rgba(193, 154, 75, 0.24);
+  --pm-line-faint: rgba(193, 154, 75, 0.13);
+  --pm-code-bg: rgba(10, 3, 5, 0.86);
+  --pm-code-text: #efd486;
+}
+
 /* ---------- 重置 ---------- */
 * {
   box-sizing: border-box;
@@ -496,18 +742,14 @@ select {
 .nav,
 .hud-center,
 .hud-right,
-.inv-tabs,
-.level-strip,
-.method-strip {
+.inv-tabs {
   scrollbar-width: none;
 }
 
 .nav::-webkit-scrollbar,
 .hud-center::-webkit-scrollbar,
 .hud-right::-webkit-scrollbar,
-.inv-tabs::-webkit-scrollbar,
-.level-strip::-webkit-scrollbar,
-.method-strip::-webkit-scrollbar {
+.inv-tabs::-webkit-scrollbar {
   width: 0;
   height: 0;
 }

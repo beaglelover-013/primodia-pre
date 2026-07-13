@@ -42,6 +42,11 @@ export const OPENING_TAVERN_TEMPLATE_ENTRY = '开局模板-酒馆档案';
 export const OPENING_CHARACTER_ENTRY = '开局人物档案';
 export const OPENING_TAVERN_ENTRY = '开局酒馆档案';
 export const OPENING_GAME_INFO_ENTRY = '游戏信息';
+const DISABLED_OPENING_ARCHIVE_ENTRY_NAMES = [
+  OPENING_CHARACTER_ENTRY,
+  OPENING_TAVERN_ENTRY,
+  OPENING_GAME_INFO_ENTRY,
+] as const;
 export const OPENING_REGION_ENTRY_NAMES = [
   '酒馆区域-主厅接待区',
   '酒馆区域-柜台酒水区',
@@ -133,6 +138,52 @@ export interface OpeningWorldbookResult {
   moduleResults: Array<OpeningModuleChoice & { prefix: string; matched: number; changed: number; foundTarget: boolean }>;
   templateResults: Array<{ entryName: string; found: boolean; changed: boolean }>;
   regionResults: Array<{ entryName: string; found: boolean; changed: boolean }>;
+}
+
+const OPENING_COPPER_PER_SILVER = 100;
+const OPENING_COPPER_PER_GOLD = OPENING_COPPER_PER_SILVER * 10;
+const OPENING_COPPER_PER_PLATINUM = OPENING_COPPER_PER_GOLD * 500;
+const OPENING_COPPER_PER_MITHRIL = OPENING_COPPER_PER_PLATINUM * 500;
+
+function openingMoneyBucket(totalCopper: number) {
+  let rest = Math.max(0, Math.floor(Number(totalCopper) || 0));
+  const mithril = Math.floor(rest / OPENING_COPPER_PER_MITHRIL);
+  rest -= mithril * OPENING_COPPER_PER_MITHRIL;
+  const platinum = Math.floor(rest / OPENING_COPPER_PER_PLATINUM);
+  rest -= platinum * OPENING_COPPER_PER_PLATINUM;
+  const gold = Math.floor(rest / OPENING_COPPER_PER_GOLD);
+  rest -= gold * OPENING_COPPER_PER_GOLD;
+  const silver = Math.floor(rest / OPENING_COPPER_PER_SILVER);
+  rest -= silver * OPENING_COPPER_PER_SILVER;
+  const copper = rest;
+
+  return {
+    铜币: copper,
+    银币: silver,
+    金币: gold,
+    铂金币: platinum,
+    秘银币: mithril,
+    折算合计铜币: Math.max(0, Math.floor(Number(totalCopper) || 0)),
+  };
+}
+
+function openingReputationState(value = 0) {
+  const score = Math.max(0, Math.min(9999, Math.floor(Number(value) || 0)));
+  const stages = [
+    { index: 1, min: 0, max: 200, label: '无人知晓', multiplier: 1.1 },
+    { index: 2, min: 200, max: 1000, label: '略有耳闻', multiplier: 1.2 },
+    { index: 3, min: 1000, max: 3000, label: '小有名气', multiplier: 1.4 },
+    { index: 4, min: 3000, max: 5000, label: '远近闻名', multiplier: 1.7 },
+    { index: 5, min: 5000, max: 9999, label: '声名远扬', multiplier: 2 },
+  ] as const;
+  const stage = [...stages].reverse().find(item => score >= item.min) ?? stages[0];
+  return {
+    数值: score,
+    阶段: stage.index,
+    名称: stage.label,
+    乘数: stage.multiplier,
+    范围: stage.index >= 5 ? `${stage.min}+` : `${stage.min}-${stage.max}`,
+  };
 }
 
 const DEFAULT_OPENING_TEMPLATE = `<maintext>
@@ -685,7 +736,7 @@ export async function saveOpeningTemplateContent(worldbookName: string, entryNam
   const cleanContent = cleanText(content);
   if (!cleanContent) throw new Error('模板正文不能为空。');
   return upsertWorldbookEntryByName(targetWorldbook, cleanName, {
-    enabled: false,
+    enabled: true,
     content: cleanContent,
     strategy: {
       type: 'constant',
@@ -994,7 +1045,9 @@ const OPENING_INITVAR_SCHEMA_GUIDE = `正式 initvar 顶层必须包含：
     具体位置: 字符串
 酒馆:
   名称: 字符串
-  声望: 数字
+  声望: { 数值: 0-9999, 阶段: 1-5, 名称: 无人知晓/略有耳闻/小有名气/远近闻名/声名远扬, 乘数: 数字, 范围: "0-200" }
+  声望值: 数字
+  声望名: 阶段名称
   资金:
     随身钱袋: 铜币/银币/金币/铂金币/秘银币/折算合计铜币
     钱匣: 铜币/银币/金币/铂金币/秘银币/折算合计铜币
@@ -1019,17 +1072,21 @@ const OPENING_INITVAR_SCHEMA_GUIDE = `正式 initvar 顶层必须包含：
   酒馆区域: {}
   人物: {}
 人物羁绊: 可为空对象
+  配角名:
+    种族/身份/羁绊阶段/阶段文字/好感/心情/所在位置/一句话穿着/生命/精力/膀胱/备注
+    个人资金: 铜币/银币/金币/铂金币/秘银币/折算合计铜币
+    收入: 职业/日收入折合铜币/结算方式/备注
 农田与酒窖:
   农田: {}
   酒窖桶: {}
 街坊商铺:
   当前商铺: ""
-  商铺: {}
 
 注意：
 - 顶层不要包 stat_data。
 - 不要输出地图、系统判定、坐标。
 - 库房物品用对象记录，至少包含 数量、标签、价格折合铜币；成品/酒水还要有 搭配判定。
+- 人物羁绊里的每个配角都要写 个人资金 和 收入；不知道就写 0 和“未确认”，不要省略字段。
 - 所有数值都要写具体值，不要留空或写“未知”。`;
 
 export async function generateOpeningStoryWithInitvar(
@@ -1077,7 +1134,6 @@ export async function generateOpeningStoryWithInitvar(
   酒窖桶: {}
 街坊商铺:
   当前商铺: ""
-  商铺: {}
 </initvar>
 </UpdateVariable>
 
@@ -1232,7 +1288,7 @@ function openingArchiveSeed(
   order: number,
 ): Partial<EditableWorldbookEntry> {
   return {
-    enabled: true,
+    enabled: false,
     name: entryName,
     comment: entryName,
     content,
@@ -1419,6 +1475,13 @@ export async function writeOpeningWorldbook(
     templateResults.push({ entryName, found: true, changed });
   }
 
+  for (const entryName of DISABLED_OPENING_ARCHIVE_ENTRY_NAMES) {
+    const index = findEntryIndex(entryName);
+    if (index >= 0 && entries[index].enabled !== false) {
+      entries[index] = { ...cloneOpeningEntry(entries[index]), enabled: false };
+    }
+  }
+
   const regionResults = [];
   for (const entryName of OPENING_REGION_ENTRY_NAMES) {
     const index = findEntryIndex(entryName);
@@ -1572,10 +1635,12 @@ export function buildFixedOpeningPreset(worldbookName = ''): {
       名称: '铁壶酒馆',
       所属领地: '韦斯托利亚',
       所在城市: '布拉姆维克',
-      声望: 0,
+      声望: openingReputationState(0),
+      声望值: 0,
+      声望名: '无人知晓',
       资金: {
-        随身钱袋: { 铜币: 0, 银币: 20, 金币: 0, 铂金币: 0, 秘银币: 0, 折算合计铜币: 2000 },
-        钱匣: { 铜币: 0, 银币: 0, 金币: 0, 铂金币: 0, 秘银币: 0, 折算合计铜币: 0 },
+        随身钱袋: openingMoneyBucket(2000),
+        钱匣: openingMoneyBucket(0),
         铜币: 0,
         银币: 20,
         金币: 0,
@@ -1685,12 +1750,14 @@ export function buildFixedOpeningPreset(worldbookName = ''): {
         生命: { 当前值: 100, 上限: 100 },
         精力: { 当前值: 82, 上限: 100 },
         膀胱: { 当前值: 18, 上限: 100 },
+        个人资金: openingMoneyBucket(8),
+        收入: { 职业: '临时应聘者', 日收入折合铜币: 0, 结算方式: '尚未入职', 备注: '身上只有八枚铜板，想靠包吃包住攒路费。' },
         备注:
           '橘柒身高160cm出头，圆润脸颊带少女婴儿肥，琥珀色狐眼，橘棕色半长卷发用旧布绳松松扎着；头顶橘棕狐耳灵活如雷达，深橘渐变到奶白尾尖的大尾巴蓬松如云。身上只有八枚铜板，离心心念念的"铁心脏"还有半个月路程，想在酒馆蹭两天吃住攒点路费。声音偏高不尖，懒洋洋拖腔。偏好：热食、住处、路费、和铁心脏有关的消息。',
       },
     },
     农田与酒窖: { 农田: {}, 酒窖桶: {} },
-    街坊商铺: { 当前商铺: '', 商铺: {} },
+    街坊商铺: { 当前商铺: '' },
   };
 
   return {
@@ -1716,6 +1783,160 @@ export function buildFixedOpeningPreset(worldbookName = ''): {
       },
     },
   };
+}
+
+const SHEEP_OPENING_MAINTEXT = `解冻月的阳光没有一丝遮拦。天蓝得干净，像刷过的。阳光从东南方倾斜地倒下来，照在脸上白晃晃的--不全是阳光的功劳，是地上的融雪在帮它。布拉姆维克的积雪正在大面积崩溃，村口没铺石板的泥路变成了一条缓缓流动的浅泥河，车辙凹处积出深到脚踝的水洼，水面倒映着干干净净的天。屋檐在滴水，白桦枝在滴水，石墙根底下半融的冰碴子也在滴水，整个村子像被一场只有声音没有雨滴的雨淋着。远处磨坊的水轮比前几天转得快了--溪水涨了--吱呀声在干净的空气里传出很远。
+
+一团白色从泥路那头慢慢靠近了。
+
+说"一团"是因为那个身影的轮廓确实更接近"一团"而不是"一个"--蓬松的纯白卷毛从头顶蔓延到肩膀，从一件深灰蓝色收腰短大衣的领口和袖口冒出来，在阳光和融雪的反光里白得几乎透明。偶蹄踩进泥地没有声音，拔出来带起一小团泥水，留下浅浅的双瓣印。残雪是白的，白桦树干是白的，她也是白的--在这个所有东西都在反光的正午，这个身影差一点就融进了风景里。差一点，因为脸是黑的。浓墨一样的纯黑覆盖了整个面部，从额头到下巴，嵌在白卷毛正中间--像有人在一团棉花上按了个墨手印。一对浅琥珀色的大眼睛在黑色面孔上格外醒目，瞳孔是横的，正缓慢调整，适应没有遮拦的阳光。鼻尖圆钝，微微泛粉，是整张脸上唯一不是纯黑的地方。
+
+头侧两只比手掌大一圈的耳朵正独立于脑袋转动--外侧黑色短毛，内侧粉红绒毛--先朝屋檐的滴水声偏了偏，又朝远处磨坊的方向转了转。头侧一对象牙白的羊角向后弯曲再向外卷，角面光滑，细密环状纹路，一根洗得发白的淡蓝色丝带缠在左角上，系法不太熟练，歪了一点。背上一个中等大小的木箱，麻布背带从双肩交叉到胸前，不大但有些分量，她走路时身体微微前倾来平衡重心。脖子上还挂着一块浅色木牌--巴掌大小，粗麻绳系在颈后，牌面朝外，边缘已经磨圆了，麻绳起着毛边。她弯腰绕过一个深泥坑时，木牌在胸前晃了一下，阳光照上去，上面的字很清楚--"请不要让我喝酒"。字迹端正，笔画利落，不是她自己刻的。
+
+她直起身，没有留意木牌晃了。双瓣偶蹄绕过泥坑，继续朝缓坡上那栋两层石砌矮楼走去。
+
+一楼有扇木门，半掩着。门边挂了一块灰木牌，上面画着一只杯子的简笔画。她在门前停了下来，盯着那扇门看了一会儿。嘴唇动了一下，像在默念什么。手指不自觉地去摸腰间小皮包的搭扣--打开，扣上，打开，扣上。耳朵微微后压，又立回来。短大衣下摆垂着的那条短尾巴--蓬松白色卷毛裹成的棉花球--开始不易察觉地颤抖。酿造师公会学徒，到韦斯托利亚不到一周，养母让她先从小村庄开始跑，一家一家地来。今天在路上犹豫了太久，已经快过午了，这是唯一还有时间进去的一家。
+
+她深吸了一口气。化冻泥土的湿腥、松木劈柴的烟、牧坡的淡膻、融雪水的清冽--这些都是背景，她没怎么上心。直到一缕从半掩门缝里渗出来的气味从这些背景中浮了出来。她的鼻子抽了一下，耳朵从后压的位置啪地立直，前倾，嘴微微张开。谷物，煮过了。底下压着铁锅被反复烧热又冷却后的金属涩气，上面浮着油脂凝回去的冷荤味，还有焦炭冷下来后的涩甜。这些气味在鼻腔里同时铺开的瞬间，脑子里某个不受她控制的角落已经自己开始运转了。
+
+"......这个......如果加一点......嗯......"极小声的嘟囔，小到三步之外听不见。然后她猛摇了一下头，角上的丝带跟着晃了两下。不是现在。她用嘴呼了口气，不用鼻子。"......您好，我是酿造师公会的--"她开始小声排练，声音比刚才的嘟囔更小，"--我们公会近期有......不对。您好，打扰了，我是......"背上的木箱随着她低头往前滑了一点，她推回去。不练了，进去就知道了。
+
+门轴没有响。她推开刚够侧身的宽度，偶蹄跨过门槛--门槛的木头已经磨出了一个浅浅的凹槽--木箱蹭了一下门框，她侧了侧身让它过去。屋里比外面暖，一种闷了一夜的、从灶台余温和木头墙壁里慢慢渗出来的沉暖。和外面白晃晃的阳光相比屋里是暗的，横瞳用了两三秒调整，琥珀色瞳孔缓慢扩大。
+
+酒馆比她预想的还要小。六张木桌散落在前厅，桌面擦过但没擦干净，角落靠窗那张残着一圈干涸的水渍。椅子粗木拼的，几把缺了横档。夯土地面铺了薄薄一层碎石，偶蹄踩上去有一点细碎的骨质碰石声。右手边布帘半掩着，那股谷物焦甜和金属涩气从帘后飘出来，在封闭的空间里浓了几倍。没有客人，一个都没有。整个空间弥漫着一种"有人在用但没什么人来"的感觉--干净是干净的，但那种干净透着寡淡，像一道只放了盐的汤。
+
+她的目光最后落在了柜台的方向。旧木板架在两个酒桶上，后面的架子摆着几只陶杯和两个半满的桶。柜台后面有人。她的视线在那个方向停了不到一秒就滑开了，落到柜台面上一只倒扣的陶杯上--耳朵替她做了确认，朝那个方向微微转了一下，捕捉到了呼吸声和布料偶尔蹭动的细微声响。活人，在那里。但她没有仔细看，不是不好奇，是嗓子眼已经开始发紧了。
+
+她应该开口了。"您好我是酿造师公会的"--这句话排练了一路，此刻在嗓子眼卡了一下，像一块太大的食物噎在喉咙口。嘴张开，气到了舌尖，没出声，又关上了。手指去弹腰间搭扣，发出极轻的金属声。再张开，又没出声。柜台后面那个人好像也没注意到她进来--整个前厅安安静静的，只有布帘后灶台上什么东西极小声地咕嘟，和从门缝渗进来的屋檐滴水声。她站在门和柜台之间的空地上，背着木箱，挂着牌子，白色卷毛在昏暗的室内像一团不太确定自己该不该出现在这里的云。五秒，十秒。她感觉过了很久，大概只有十几秒。她一定要开口，这是她的工作，养母在等她回去汇报。
+
+她第三次张开嘴，然后身后一阵风灌了进来。
+
+她进来的时候没有把门关严。融雪午后的风不冷但莽，灌进来的一瞬间裹着湿泥、融水和被太阳晒热的石头气息，直直扑进了前厅。她站在门和柜台之间正对风口，蓬松的白色卷毛在风里整个炸开了--从头顶到短大衣领口全部朝一个方向飘起来，角上那根歪丝带被吹得直直指向柜台。木牌在风里晃荡，"咔"地一声磕在木箱的背带扣上。耳朵里灌进冷风，粉红绒毛被吹得倒伏。她的双手本能地离开了小皮包--一只去按头顶飞起来的卷毛，一只去扶被风推歪的木箱--身体扭了一下，左蹄在碎石地面上滑了半步。门在风里撞开了，门板拍在墙上闷闷一声响，外面的阳光像掀翻了一桶白漆涌进来，刚适应暗处的横瞳猛然收缩，整个视野白了一瞬。
+
+她在那片涌进来的光里僵了大约一秒钟。一只手按着头顶还没顺回去的卷毛，一只手扶着歪了一半的木箱，木牌还在轻轻晃，偶蹄卡在打滑的位置没敢动。阳光从背后打进来，在夯土地面上投下一个毛茸茸的、边缘不规则的影子。浅琥珀色的横瞳从飞散的白色卷毛后面，对上了柜台方向看过来的目光。
+
+她的嘴还张着--排练了一路的那句"您好我是酿造师公会的"被风、门响、卷毛和打滑搅成了浆糊，从脑子里干干净净地消失了。耳朵啪地压平，鼻尖的粉色深了一点。`;
+
+export function buildSheepOpeningPreset(worldbookName = ''): {
+  draft: OpeningWorkshopDraft;
+  bundle: OpeningGenerationBundle;
+} {
+  const preset = buildFixedOpeningPreset(worldbookName);
+  const { draft, bundle } = preset;
+  draft.tavern.story = '酿造师公会学徒绵暖背着木箱来到布拉姆维克村口的铁壶酒馆，还没来得及介绍自己，就被融雪午后的风吹乱了开场。';
+  draft.tavern.funds = '6金币';
+  draft.tavern.stock = '蔬菜和肉稍多';
+  draft.theme = '固定开场白：小绵羊酿造师公会来访';
+
+  bundle.characterProfile.profile =
+    '克斯，14岁，人类。刚接手布拉姆维克村口的铁壶酒馆，穿着洗得发白的亚麻短袖衫、深棕色粗布短裤和旧围裙，赤脚站在柜台后。开局时他被一位被风吹乱开场的酿造师公会学徒吸引了注意。';
+  bundle.characterProfile.summary = '克斯是铁壶酒馆的少年老板，慢半拍但认真，刚开始独自经营酒馆。';
+  bundle.tavernProfile.profile =
+    '铁壶酒馆位于韦斯托利亚布拉姆维克村口，是一间小型旧酒馆。前厅有六张木桌、旧木柜台、陶杯和半满酒桶，厨房里还有灶台余温、谷物焦甜气、铁锅金属涩气和一点冷荤味。解冻月正午，酿造师公会学徒绵暖背着木箱来到这里拜访。';
+  bundle.tavernProfile.summary = '解冻月正午，铁壶酒馆冷清但可营业，门口半掩，厨房里有谷物焦甜、金属涩气和冷荤味。';
+  bundle.story.maintext = SHEEP_OPENING_MAINTEXT;
+  bundle.story.options = ['看向门口，回应这位酿造师公会学徒'];
+  bundle.story.sum = '解冻月正午，酿造师公会学徒绵暖来到布拉姆维克的铁壶酒馆，刚要自我介绍就被融雪风吹乱，尴尬地和柜台后的克斯对上视线。';
+
+  const initvar = bundle.story.initvar as Record<string, any>;
+  initvar.世界.当前历法.天气 = '解冻月晴朗正午，融雪反光强烈，泥路积水';
+  initvar.世界.当前历法.时间 = '12:20';
+  initvar.酒馆.资金 = {
+    随身钱袋: openingMoneyBucket(6000),
+    钱匣: openingMoneyBucket(0),
+    铜币: 0,
+    银币: 0,
+    金币: 6,
+    铂金币: 0,
+    秘银币: 0,
+    折算合计铜币: 6000,
+  };
+  initvar.酒馆.整体概况 =
+    '铁壶酒馆冷清，真正能用的是主厅接待区、柜台酒水区、厨房餐食区和二楼几间简陋客房。门外是布拉姆维克村口正在融雪的泥路，屋里有灶台余温、谷物焦甜气、铁锅金属涩气和一点冷荤味。';
+  initvar.主角.当前状态 = '在柜台后，被进门后僵住的酿造师公会学徒吸引了注意';
+  initvar.库房.食材 = {
+    ...initvar.库房.食材,
+    新鲜土豆: { 数量: 8, 标签: ['蔬菜', '根茎', '饱腹'], 价格折合铜币: 12 },
+    春萝卜: { 数量: 6, 标签: ['蔬菜', '清甜', '水润'], 价格折合铜币: 7 },
+    卷心菜: { 数量: 4, 标签: ['蔬菜', '耐储', '清脆'], 价格折合铜币: 9 },
+    风干咸肉: { 数量: 3, 标签: ['肉类', '耐储', '咸香'], 价格折合铜币: 28 },
+    熏羊肉: { 数量: 2, 标签: ['肉类', '烟熏', '厚鲜'], 价格折合铜币: 36 },
+  };
+  delete initvar.人物羁绊.橘柒;
+  initvar.人物羁绊.绵暖 = {
+    种族: '羊族',
+    身份: '酿造师公会学徒',
+    羁绊阶段: 1,
+    阶段文字: '陌生人',
+    好感: 0,
+    心情: '紧张、尴尬，努力维持礼貌',
+    所在位置: '主厅接待区',
+    一句话穿着: '深灰蓝色收腰短大衣，蓬松纯白卷毛从领口和袖口冒出，左角缠着淡蓝色旧丝带，背着中等大小木箱，脖子上挂着写有“请不要让我喝酒”的木牌。',
+    生命: { 当前值: 100, 上限: 100 },
+    精力: { 当前值: 78, 上限: 100 },
+    膀胱: { 当前值: 12, 上限: 100 },
+    个人资金: openingMoneyBucket(0),
+    收入: { 职业: '酿造师公会学徒', 日收入折合铜币: 0, 结算方式: '公会学徒补贴由养母/公会安排', 备注: '当前跑村庄拜访线路，个人可支配收入尚未确认。' },
+    备注:
+      '绵暖是刚到韦斯托利亚不到一周的酿造师公会学徒，浅琥珀色横瞳，黑色面孔，粉色鼻尖，白色卷毛和向后弯卷的象牙白羊角很醒目。她受养母安排从小村庄开始拜访酒馆，嗅觉敏锐，闻到谷物、铁锅、油脂和焦炭味时会本能思考酿造或调味改良。她极度紧张，开场时被融雪午后的风吹乱，尚未成功说出自我介绍。偏好：温和交流、酿造、谷物香气、被认真听完；注意：木牌写着“请不要让我喝酒”。',
+  };
+  return preset;
+}
+
+const SOLO_COOK_OPENING_MAINTEXT = `<user>克斯从睡梦中醒来，迎接他新的一天。</user>`;
+
+export function buildSoloCookOpeningPreset(worldbookName = ''): {
+  draft: OpeningWorkshopDraft;
+  bundle: OpeningGenerationBundle;
+} {
+  const preset = buildFixedOpeningPreset(worldbookName);
+  const { draft, bundle } = preset;
+  draft.tavern.story = '克斯在解冻月清晨独自醒来，没有任何女主或陌生来客登场。他只想把铁壶酒馆收拾起来，靠做饭赚钱。';
+  draft.tavern.funds = '6金币';
+  draft.tavern.stock = '蔬菜和肉稍多';
+  draft.theme = '单人开局';
+
+  bundle.characterProfile.profile =
+    '克斯，14岁，人类。刚接手布拉姆维克村口的铁壶酒馆，穿着洗得发白的亚麻短袖衫、深棕色粗布短裤和旧围裙，赤脚在清晨下楼生火。他此刻没有等待任何相遇，只想靠做饭、卖饭和经营酒馆赚钱。';
+  bundle.characterProfile.summary = '克斯是铁壶酒馆的少年老板，慢半拍但认真，当前目标很朴素：做饭赚钱，把破旧酒馆撑起来。';
+  bundle.tavernProfile.profile =
+    '铁壶酒馆位于韦斯托利亚布拉姆维克村口，是一间冷清的小型旧酒馆。前厅有六张木桌、旧木柜台、陶杯和半满酒桶，厨房里有灶台、铁锅、干木柴、粗粮、蔬菜和少量肉。这个开局没有任何女主或来访者登场，第一天从克斯独自醒来、生火、备菜开始。';
+  bundle.tavernProfile.summary = '解冻月清晨，铁壶酒馆尚未营业；克斯独自起床生火，准备靠做饭赚钱。';
+  bundle.story.maintext = SOLO_COOK_OPENING_MAINTEXT;
+  bundle.story.options = ['开始备菜，准备今天营业'];
+  bundle.story.sum = '解冻月清晨，克斯从睡梦中醒来，迎接铁壶酒馆的新一天。';
+
+  const initvar = bundle.story.initvar as Record<string, any>;
+  initvar.世界.当前历法.天气 = '解冻月清晨，薄雾湿冷，泥路半干，屋檐仍在滴水';
+  initvar.世界.当前历法.时间 = '06:20';
+  initvar.酒馆.资金 = {
+    随身钱袋: openingMoneyBucket(6000),
+    钱匣: openingMoneyBucket(0),
+    铜币: 0,
+    银币: 0,
+    金币: 6,
+    铂金币: 0,
+    秘银币: 0,
+    折算合计铜币: 6000,
+  };
+  initvar.酒馆.今日营业状态 = '准备营业';
+  initvar.酒馆.整体概况 =
+    '铁壶酒馆冷清但可用。这个开局没有女主相遇，也没有陌生来访者登场；第一天从克斯独自醒来、生火、备菜、盘算靠做饭赚钱开始。';
+  initvar.主角.当前状态 = '清晨刚醒，正在厨房生火备菜，目标是做饭赚钱';
+  initvar.主角.所在位置 = '厨房餐食区';
+  initvar.库房.食材 = {
+    ...initvar.库房.食材,
+    新鲜土豆: { 数量: 10, 标签: ['蔬菜', '根茎', '饱腹'], 价格折合铜币: 12 },
+    春萝卜: { 数量: 8, 标签: ['蔬菜', '清甜', '水润'], 价格折合铜币: 7 },
+    卷心菜: { 数量: 5, 标签: ['蔬菜', '耐储', '清脆'], 价格折合铜币: 9 },
+    风干咸肉: { 数量: 4, 标签: ['肉类', '耐储', '咸香'], 价格折合铜币: 28 },
+    熏羊肉: { 数量: 2, 标签: ['肉类', '烟熏', '厚鲜'], 价格折合铜币: 36 },
+  };
+  initvar.人物羁绊 = {};
+  initvar.农田与酒窖 = initvar.农田与酒窖 ?? { 农田: {}, 酒窖桶: {} };
+  initvar.街坊商铺 = { 当前商铺: '' };
+
+  return preset;
 }
 
 export function buildOpeningFallbackStory(draft: OpeningWorkshopDraft) {

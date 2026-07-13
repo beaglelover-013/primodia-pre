@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { useGameStore, type PromiseMemo } from '../stores/game';
+import { useGameStore, type InventoryItem, type PromiseMemo } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 import {
   findNearestShopBefore,
@@ -78,6 +78,31 @@ const promiseTaskItems = computed(() =>
       return dueDelta || a.triggerTime.localeCompare(b.triggerTime, 'zh-Hans-CN') || a.name.localeCompare(b.name, 'zh-Hans-CN');
     }),
 );
+const satchelPreviewItems = computed(() => {
+  const categoryPriority: Record<InventoryItem['category'], number> = {
+    成品: 0,
+    食材: 1,
+    酒水: 2,
+    调料: 3,
+    杂物: 4,
+  };
+  return game.satchel
+    .filter(item => item.qty > 0)
+    .slice()
+    .sort(
+      (a, b) =>
+        categoryPriority[a.category] - categoryPriority[b.category] ||
+        b.qty - a.qty ||
+        a.name.localeCompare(b.name, 'zh-Hans-CN'),
+    )
+    .slice(0, 8);
+});
+const satchelItemKinds = computed(() => game.satchel.filter(item => item.qty > 0).length);
+const satchelItemCount = computed(() => game.satchel.reduce((total, item) => total + Math.max(0, item.qty), 0));
+
+function openSatchel() {
+  game.currentTab = 'inventory';
+}
 
 function promisePeopleText(memo: PromiseMemo) {
   return memo.people.length ? memo.people.join('、') : '未标注人物';
@@ -675,7 +700,8 @@ watch(
       </section>
     </article>
 
-    <aside class="promise-rail" :class="{ open: isPromiseRailOpen, due: promiseTaskItems.some(memo => game.isPromiseMemoDue(memo)) }">
+    <aside class="chronicle-rail">
+    <section class="promise-rail" :class="{ open: isPromiseRailOpen, due: promiseTaskItems.some(memo => game.isPromiseMemoDue(memo)) }">
       <header class="promise-rail-head">
         <div>
           <p class="kicker">PROMISES</p>
@@ -712,6 +738,34 @@ watch(
           </div>
         </article>
       </div>
+    </section>
+
+    <section class="satchel-glance">
+      <header class="satchel-glance-head">
+        <div>
+          <p class="kicker">SATCHEL</p>
+          <h2>随身行囊</h2>
+        </div>
+        <span>{{ satchelItemKinds }} 种</span>
+      </header>
+
+      <div v-if="satchelPreviewItems.length" class="satchel-glance-list">
+        <button v-for="item in satchelPreviewItems" :key="item.id" type="button" @click="openSatchel">
+          <span class="satchel-item-name">{{ item.name }}</span>
+          <small>{{ item.category }}</small>
+          <strong>×{{ item.qty }}</strong>
+        </button>
+      </div>
+      <div v-else class="satchel-glance-empty">行囊里暂时没有物品。</div>
+
+      <footer class="satchel-glance-footer">
+        <span>共 {{ satchelItemCount }} 件</span>
+        <button type="button" @click="openSatchel">
+          <PmIcon name="ledger" :size="13" />
+          打开行囊
+        </button>
+      </footer>
+    </section>
     </aside>
 
     <Teleport to="body">
@@ -867,9 +921,15 @@ watch(
     inset 0 0 0 1px rgba(255, 255, 250, 0.72),
     inset 0 0 42px rgba(116, 80, 38, 0.14);
 }
-.promise-rail {
+.chronicle-rail {
   position: sticky;
   top: 18px;
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+.promise-rail,
+.satchel-glance {
   display: grid;
   gap: 10px;
   width: 100%;
@@ -1001,6 +1061,95 @@ watch(
   font-size: calc(11px * var(--pm-text-scale));
 }
 .promise-actions button:hover {
+  color: var(--pm-gold-bright);
+  border-color: var(--pm-line-soft);
+}
+.satchel-glance-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--pm-line-faint);
+}
+.satchel-glance-head h2 {
+  margin: 0;
+  color: var(--pm-dark-text);
+  font-size: calc(17px * var(--pm-text-scale));
+  font-weight: 500;
+}
+.satchel-glance-head > span {
+  flex: none;
+  color: var(--pm-gold);
+  font-size: calc(11px * var(--pm-text-scale));
+}
+.satchel-glance-list {
+  display: grid;
+  gap: 5px;
+}
+.satchel-glance-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 8px;
+  color: var(--pm-dark-muted);
+  text-align: left;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+.satchel-glance-list button:hover {
+  color: var(--pm-dark-text);
+  background: var(--pm-dark-panel-soft);
+  border-color: var(--pm-line-faint);
+}
+.satchel-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(12px * var(--pm-text-scale));
+}
+.satchel-glance-list small {
+  color: var(--pm-dark-faint);
+  font-size: calc(10px * var(--pm-text-scale));
+}
+.satchel-glance-list strong {
+  min-width: 28px;
+  color: var(--pm-gold-bright);
+  text-align: right;
+  font-size: calc(12px * var(--pm-text-scale));
+}
+.satchel-glance-empty {
+  padding: 16px 12px;
+  color: var(--pm-dark-faint);
+  text-align: center;
+  border: 1px dashed var(--pm-line-faint);
+  border-radius: 4px;
+}
+.satchel-glance-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+  color: var(--pm-dark-faint);
+  font-size: calc(11px * var(--pm-text-scale));
+}
+.satchel-glance-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  color: var(--pm-dark-text);
+  background: var(--pm-dark-panel-soft);
+  border: 1px solid var(--pm-line-faint);
+  border-radius: 4px;
+  font-size: calc(11px * var(--pm-text-scale));
+}
+.satchel-glance-footer button:hover {
   color: var(--pm-gold-bright);
   border-color: var(--pm-line-soft);
 }
@@ -1599,7 +1748,7 @@ h1 {
     grid-template-columns: 1fr;
     justify-content: stretch;
   }
-  .promise-rail {
+  .chronicle-rail {
     position: static;
   }
 }
@@ -1660,6 +1809,12 @@ h1 {
   }
   .promise-rail:not(.open) .kicker {
     display: none;
+  }
+  .satchel-glance {
+    padding: 10px;
+  }
+  .satchel-glance-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .story-head {
     flex-direction: column;

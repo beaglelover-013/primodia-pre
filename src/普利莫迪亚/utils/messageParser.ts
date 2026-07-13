@@ -10,6 +10,7 @@ export interface StoryMessagePayload {
   shop?: ParsedShop;
   craftResult?: ParsedCraftResult;
   guestUpdates?: ParsedGuestUpdate[];
+  regularGuestUpdates?: ParsedRegularGuestUpdate[];
   promiseUpdates?: ParsedPromiseUpdate[];
   characterBehaviorUpdates?: ParsedCharacterBehaviorUpdate[];
   messageId?: number;
@@ -63,6 +64,25 @@ export interface ParsedGuestUpdate {
   note: string;
 }
 
+export type RegularGuestUpdateAction = 'add' | 'update' | 'remove';
+export type RegularGuestUnitType = '个人' | '团体';
+
+export interface ParsedRegularGuestUpdate {
+  action: RegularGuestUpdateAction;
+  id?: string;
+  name: string;
+  type: RegularGuestUnitType;
+  sizeText: string;
+  identity: string;
+  relationship: string;
+  memoryHook: string;
+  likes: string;
+  dislikes: string;
+  habits: string;
+  messageTendency: string;
+  notes: string;
+}
+
 export type PromiseUpdateAction = 'add' | 'cancel' | 'resolve';
 
 export interface ParsedPromiseUpdate {
@@ -98,6 +118,7 @@ const HIDDEN_STORY_TAGS = [
   'shop',
   'craft_result',
   'guest_update',
+  'regular_guest_update',
   'promise_update',
   'character_behavior_update',
   'UpdateVariable',
@@ -233,6 +254,7 @@ function parseStoryMessage(messageContent: string, messageId?: number): StoryMes
     shop: parseShop(messageContent),
     craftResult: parseCraftResult(messageContent),
     guestUpdates: parseGuestUpdates(messageContent),
+    regularGuestUpdates: parseRegularGuestUpdates(messageContent),
     promiseUpdates: parsePromiseUpdates(messageContent),
     characterBehaviorUpdates: parseCharacterBehaviorUpdates(messageContent),
     messageId,
@@ -568,17 +590,85 @@ function normalizeCraftId(raw: string): string | undefined {
   return id || undefined;
 }
 
+function readCraftTitleName(craftText: string): string {
+  const firstContentLine = craftText
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line && !/^<|^```/.test(line));
+  if (!firstContentLine) return '';
+  const bracketMatch = firstContentLine.match(/^[【\[](.+?)[】\]]$/);
+  if (bracketMatch?.[1]?.trim()) return bracketMatch[1].trim();
+  return '';
+}
+
+function parseCraftResultJson(craftText: string): ParsedCraftResult | undefined {
+  let parsed: unknown;
+  try {
+    parsed = parseLooseJson(cleanJsonLikeText(craftText));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  const name = readJsonFirstString(record, ['名称', '成品名', '菜名', '酱名', '饮品名', 'name', 'outputName']);
+  if (!name) return undefined;
+
+  const type =
+    readJsonFirstString(record, ['类型', '菜品分类', '分类', '品类', 'category', 'type']) ||
+    (record.饮品名 ? '饮品' : '菜品');
+  const destination =
+    readJsonFirstString(record, ['去向', '放入', '目标', '入库分类', 'destination']) ||
+    (type.includes('饮') ? '酒水' : '成品');
+  const quantity = Math.max(1, readJsonNumber(record.数量 ?? record.产量 ?? record.quantity ?? record.yield, 1));
+  const priceCopper = readJsonNumber(record.价格 ?? record.售价 ?? record.单价 ?? record.单份售价 ?? record.priceCopper, 0);
+  const serveableText = readJsonFirstString(record, ['是否可上菜', '可上菜', '可直接上桌', 'serveable']);
+  const serveable = !/否|不|不能|不可/.test(serveableText || '') && !/酒窖|桶|熟成|发酵/.test(destination);
+  const tags = [
+    ...readJsonStringList(record, ['标签', '味觉标签', '口感标签', '结构型风味', '工艺食味', 'tags']),
+    ...readJsonStringList(record, ['气味标签', '气息标签', 'aromaTags']),
+  ];
+  const description =
+    readJsonFirstString(record, ['描述', '说明', '月感标签', '备注', 'description', 'desc']) ||
+    [
+      readJsonFirstString(record, ['搭配等级']),
+      readJsonStringList(record, ['味觉标签']).join('、'),
+      readJsonStringList(record, ['气息标签']).join('、'),
+    ]
+      .filter(Boolean)
+      .join('；');
+
+  return {
+    craftId: normalizeCraftId(readJsonFirstString(record, ['编号', 'ID', 'id', 'craftId'])),
+    type,
+    name,
+    destination,
+    barrelName: readJsonFirstString(record, ['桶名', 'barrelName']) || undefined,
+    startDay: readJsonFirstString(record, ['开始日', '酿造开始日', 'startDay']) || undefined,
+    matureDay: readJsonFirstString(record, ['预计收获日', '收获日', '成熟日', 'matureDay']) || undefined,
+    quantity,
+    quality: readJsonFirstString(record, ['搭配判定', '搭配等级', '品质', 'quality']) || undefined,
+    tags: [...new Set(tags)],
+    aromaTags: readJsonStringList(record, ['气味标签', '气息标签', 'aromaTags']),
+    priceCopper,
+    serveable,
+    description,
+  };
+}
+
 export function parseCraftResult(messageContent: string): ParsedCraftResult | undefined {
   const craftText = extractLastTag(stripThinkingBlocks(messageContent), 'craft_result');
   if (!craftText) return undefined;
 
-  const name = readCraftField(craftText, ['名称', '成品名', '菜名', '酱名', '饮品名']);
+  const jsonResult = parseCraftResultJson(craftText);
+  if (jsonResult) return jsonResult;
+
+  const name = readCraftField(craftText, ['名称', '成品名', '菜名', '酱名', '饮品名']) || readCraftTitleName(craftText);
   if (!name) return undefined;
 
-  const type = readCraftField(craftText, ['类型']) || '菜品';
+  const type = readCraftField(craftText, ['类型', '菜品分类', '分类', '品类']) || '菜品';
   const destination = readCraftField(craftText, ['去向', '放入', '目标']) || (type.includes('饮') ? '酒水' : '成品');
-  const quantity = Math.max(1, Number(readCraftField(craftText, ['数量']).replace(/[^\d]/g, '')) || 1);
-  const priceCopper = parseCopperValue(readCraftField(craftText, ['价格', '售价', '单价']));
+  const quantity = Math.max(1, Number(readCraftField(craftText, ['数量', '产量']).replace(/[^\d]/g, '')) || 1);
+  const priceCopper = parseCopperValue(readCraftField(craftText, ['价格', '售价', '单价', '单份售价']));
   const serveableText = readCraftField(craftText, ['是否可上菜', '可上菜', '可直接上桌']);
   const serveable = !/否|不|不能|不可/.test(serveableText || '') && !/酒窖|桶|熟成|发酵/.test(destination);
 
@@ -592,7 +682,10 @@ export function parseCraftResult(messageContent: string): ParsedCraftResult | un
     matureDay: readCraftField(craftText, ['预计收获日', '收获日', '成熟日']) || undefined,
     quantity,
     quality: readCraftField(craftText, ['搭配判定', '品质']) || undefined,
-    tags: splitCraftList(readCraftField(craftText, ['标签'])),
+    tags: [
+      ...splitCraftList(readCraftField(craftText, ['标签', '味觉标签', '口感标签', '结构型风味', '工艺食味'])),
+      ...splitCraftList(readCraftField(craftText, ['月感标签'])),
+    ],
     aromaTags: splitCraftList(readCraftField(craftText, ['气味标签', '气息标签'])),
     priceCopper,
     serveable,
@@ -667,6 +760,71 @@ export function parseGuestUpdates(messageContent: string): ParsedGuestUpdate[] {
     return entries
       .map((entry, index) => normalizeGuestUpdate(entry, index))
       .filter((entry): entry is ParsedGuestUpdate => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeRegularGuestAction(raw: string): RegularGuestUpdateAction {
+  const action = raw.trim().toLowerCase();
+  if (action === 'remove' || action === 'delete' || action === '删除' || action === '移除') return 'remove';
+  if (action === 'update' || action === 'edit' || action === '修改' || action === '更新') return 'update';
+  return 'add';
+}
+
+function normalizeRegularGuestUnitType(raw: string): RegularGuestUnitType {
+  const value = raw.trim();
+  return value === '团体' || /group|party|team|crew|多人|一桌|团/.test(value) ? '团体' : '个人';
+}
+
+function normalizeRegularGuestUpdate(value: unknown): ParsedRegularGuestUpdate | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const action = normalizeRegularGuestAction(readJsonFirstString(record, ['action', '动作', '操作']));
+  const name = readJsonFirstString(record, ['name', '名称', '名字', '称呼']);
+  const id = readJsonFirstString(record, ['id', 'ID']);
+  if (!name && !id) return undefined;
+
+  const type = normalizeRegularGuestUnitType(readJsonFirstString(record, ['type', '类型']));
+  const sizeText = readJsonFirstString(record, ['sizeText', '人数描述', '人数', '群体描述']);
+  const identity = readJsonFirstString(record, ['identity', '身份', '职业', '来历']);
+  const relationship = readJsonFirstString(record, ['relationship', '关系', '关系阶段']);
+  const memoryHook = readJsonFirstString(record, ['memoryHook', '记忆钩子', '记忆', '上次经历']);
+  const likes = readJsonFirstString(record, ['likes', '偏好', '喜好', '喜欢']);
+  const dislikes = readJsonFirstString(record, ['dislikes', '忌口', '不喜欢', '避雷']);
+  const habits = readJsonFirstString(record, ['habits', '习惯', '行为习惯']);
+  const messageTendency = readJsonFirstString(record, ['messageTendency', '消息倾向', '消息', '传闻倾向']);
+  const notes = readJsonFirstString(record, ['notes', '备注', '补充']);
+
+  if (action === 'add' && ![identity, memoryHook, likes, dislikes, habits, messageTendency, notes].some(Boolean)) return undefined;
+
+  return {
+    action,
+    ...(id ? { id } : {}),
+    name: name || id,
+    type,
+    sizeText,
+    identity,
+    relationship: relationship || '陌生人',
+    memoryHook,
+    likes,
+    dislikes,
+    habits,
+    messageTendency,
+    notes,
+  };
+}
+
+export function parseRegularGuestUpdates(messageContent: string): ParsedRegularGuestUpdate[] {
+  const updateText = extractLastTag(stripThinkingBlocks(messageContent), 'regular_guest_update');
+  if (!updateText) return [];
+
+  try {
+    const parsed = parseLooseJson(cleanJsonLikeText(updateText));
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries
+      .map(entry => normalizeRegularGuestUpdate(entry))
+      .filter((entry): entry is ParsedRegularGuestUpdate => Boolean(entry));
   } catch {
     return [];
   }

@@ -10,6 +10,7 @@ import ServiceTray from './components/ServiceTray.vue';
 import OpeningSelectPage from './pages/OpeningSelectPage.vue';
 import ChroniclePage from './pages/ChroniclePage.vue';
 import TavernPage from './pages/TavernPage.vue';
+import RegularGuestsPage from './pages/RegularGuestsPage.vue';
 import ProtagonistPage from './pages/ProtagonistPage.vue';
 import InventoryPage from './pages/InventoryPage.vue';
 import RecipesPage from './pages/RecipesPage.vue';
@@ -249,6 +250,8 @@ const tabComponent = computed(() => {
       return ChroniclePage;
     case 'tavern':
       return TavernPage;
+    case 'regularGuests':
+      return RegularGuestsPage;
     case 'protagonist':
       return ProtagonistPage;
     case 'inventory':
@@ -282,6 +285,7 @@ const tabTitle = computed(
       opening: '开场选择',
       chronicle: '编年录 · 正文',
       tavern: '酒馆 · 八区域',
+      regularGuests: '常客簿',
       protagonist: '主角档案',
       inventory: '行囊与库房',
       recipes: '配方簿',

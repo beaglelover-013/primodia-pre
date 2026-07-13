@@ -134,8 +134,8 @@ function normalizeBehaviorItem(value: unknown, fallbackRegion = ''): CharacterBe
     region,
     behavior,
     trigger: cleanText(record.trigger ?? record['触发']) || 'observed',
-    source: '',
-    protagonistFeel: '',
+    source: cleanText(record.source),
+    protagonistFeel: cleanText(record.protagonistFeel),
     learnedAtTurn: Math.max(0, Math.floor(Number(record.learnedAtTurn) || 0)),
     updatedAt: Math.max(0, Math.floor(Number(record.updatedAt) || Date.now())),
   };
@@ -171,8 +171,8 @@ export function formatCharacterBehaviorLibraryContent(library: CharacterBehavior
     version: 1,
     characterId: cleanText(library.characterId),
     characterName: cleanText(library.characterName) || '未命名角色',
-    behaviors: library.behaviors.map(item => ({ ...item, source: '', protagonistFeel: '', id: item.id || behaviorId(item.region, item.behavior) })),
-    unlocatedBehaviors: library.unlocatedBehaviors.map(item => ({ ...item, source: '', protagonistFeel: '', id: item.id || behaviorId(item.region, item.behavior) })),
+    behaviors: library.behaviors.map(item => ({ ...item, id: item.id || behaviorId(item.region, item.behavior) })),
+    unlocatedBehaviors: library.unlocatedBehaviors.map(item => ({ ...item, id: item.id || behaviorId(item.region, item.behavior) })),
     updatedAt: Date.now(),
   };
   return `<${CHARACTER_BEHAVIOR_BLOCK_TAG}>\n${JSON.stringify(normalized, null, 2)}\n</${CHARACTER_BEHAVIOR_BLOCK_TAG}>`;
@@ -237,13 +237,13 @@ export async function saveCharacterBehaviorLibraryToEntry(ref: WorldbookEntryRef
     enabled: false,
     content: formatCharacterBehaviorLibraryContent(library),
   };
-  await saveWorldbookEntry(ref.worldbookName, next);
+  return saveWorldbookEntry(ref.worldbookName, next);
 }
 
 function upsertBehavior(list: CharacterBehaviorItem[], item: CharacterBehaviorItem) {
   const id = behaviorId(item.region, item.behavior);
   const index = list.findIndex(existing => existing.id === id || behaviorId(existing.region, existing.behavior) === id);
-  const next = { ...item, id, source: '', protagonistFeel: '', updatedAt: Date.now() };
+  const next = { ...item, id, updatedAt: Date.now() };
   if (index >= 0) list[index] = { ...list[index], ...next, learnedAtTurn: list[index].learnedAtTurn || next.learnedAtTurn };
   else list.push(next);
 }
@@ -283,8 +283,8 @@ export function applyCharacterBehaviorUpdatesToLibrary(
         region,
         behavior,
         trigger: cleanText(update.trigger) || 'observed',
-        source: '',
-        protagonistFeel: '',
+        source: cleanText(update.source),
+        protagonistFeel: cleanText(update.protagonistFeel),
         learnedAtTurn: Math.max(0, turn),
         updatedAt: Date.now(),
       };

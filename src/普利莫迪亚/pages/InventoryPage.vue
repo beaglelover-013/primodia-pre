@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useGameStore, formatCopper, type InventoryItem, type InventorySource } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 
@@ -15,10 +15,6 @@ interface SlotEntry {
   qty: number;
 }
 type CraftMode = 'cooking' | 'sauce' | 'drink';
-type MethodLevel = {
-  label: string;
-  groups: [string, string[]][];
-};
 
 const slots = ref<SlotEntry[]>([]);
 const slotLogIds = ref<string[]>([]);
@@ -26,169 +22,18 @@ const selectedServeGuestId = ref('');
 const craftMode = ref<CraftMode>('cooking');
 type MoveDirection = 'to_storage' | 'to_satchel';
 const activeMove = ref<{ itemId: string; direction: MoveDirection; qty: number } | null>(null);
+const activeUse = ref<{ itemId: string; source: InventorySource; target: string } | null>(null);
 const craftModeLabels: Record<CraftMode, string> = {
   cooking: '做菜',
   sauce: '做酱',
   drink: '做饮品',
 };
-const techniqueByMode = reactive<Record<CraftMode, string>>({
-  cooking: '煮',
-  sauce: '搅拌混合',
-  drink: '压榨取汁',
-});
-const selectedMethodLevelByMode = reactive<Record<CraftMode, string>>({
-  cooking: '1级·烧火工',
-  sauce: '1级·烧火工',
-  drink: '1级·烧火工',
-});
-const expandedLevelByMode = reactive<Record<CraftMode, string | null>>({
-  cooking: null,
-  sauce: null,
-  drink: null,
-});
-
-const methodLevels: MethodLevel[] = [
-  {
-    label: '1级·烧火工',
-    groups: [
-      ['清水煮烫', ['煮', '水煮', '清煮', '汆', '焯', '烫', '涮', '滚', '浸煮', '沸煮', '白灼', '汤煮']],
-      ['明火烤制', ['烤', '明火烤', '炭烤', '串烤', '火塘烤', '烧烤']],
-      ['冷拌生拌', ['凉拌', '冷拌', '生拌']],
-      ['简单腌味', ['盐腌', '糖腌', '醋腌']],
-    ],
-  },
-  {
-    label: '2级·守灶童',
-    groups: [
-      ['慢炖焖煲', ['炖', '清炖', '焖', '煨', '煲', '熬']],
-      ['平锅煎烙', ['煎', '干煎', '平底锅煎', '烙']],
-      ['甜咸水煮', ['盐水煮', '糖水煮']],
-      ['入味腌泡', ['干腌', '湿腌', '泡', '酱腌', '香料腌']],
-    ],
-  },
-  {
-    label: '3级·灶台学徒',
-    groups: [
-      ['热锅快炒', ['炒', '清炒', '小炒', '快炒', '生炒', '熟炒']],
-      ['油锅炸制', ['炸', '深炸', '浅炸', '清炸', '干炸']],
-      ['干锅煸炒', ['煸', '干煸', '干炒']],
-      ['进阶烤制', ['架烤', '坑烤', '旋转烤']],
-      ['浓味焖炖', ['红炖', '黄焖', '红焖']],
-    ],
-  },
-  {
-    label: '4级·行炉工',
-    groups: [
-      ['蒸笼水汽', ['蒸', '清蒸', '笼蒸', '隔水蒸', '汽蒸']],
-      ['炉内烘烤', ['烘烤', '焙', '炉烤']],
-      ['烧烩收汁', ['烧', '红烧', '白烧', '烩', '烹']],
-      ['木烟熏香', ['熏', '烟熏', '热熏', '木熏']],
-      ['热油处理', ['过油', '滑油', '油泼']],
-      ['汤汁调味', ['奶煮', '酒煮', '咖喱煮', '辣酱炖']],
-    ],
-  },
-  {
-    label: '5级·持勺匠',
-    groups: [
-      ['猛火爆炒', ['滑炒', '软炒', '爆', '油爆', '酱爆', '葱爆', '火爆', '炝炒', '回锅', '铁锅炒', '镬气炒']],
-      ['焦香煎封', ['香煎', '煎封', '半煎炸', '煎烤', '铁板煎', '煎焗', '塌', '贴', '锅贴', '石板煎']],
-      ['裹粉酥炸', ['酥炸', '脆炸', '软炸', '挂糊炸', '裹粉炸']],
-      ['浓汁烧焖', ['干烧', '葱烧', '酱烧', '照烧', '蒲烧', '扒', '油焖']],
-      ['包裹焗烤', ['纸包烤', '叶包烤', '竹筒烤', '盐焗', '沙焗']],
-      ['粉蒸成菜', ['粉蒸']],
-      ['连环工序', ['先煎后焖', '先炸后烧', '先烤后炖', '先蒸后煎', '先腌后烤', '先汆后炒']],
-    ],
-  },
-  {
-    label: '6级·灶台师傅',
-    groups: [
-      ['卤水浸熟', ['卤', '红卤', '白卤', '糟卤', '酱', '酱卤', '卤水浸']],
-      ['进阶蒸法', ['旱蒸', '酒蒸', '盐蒸', '蒸烤', '盏蒸']],
-      ['嫩蛋羹蒸', ['茶碗蒸', '蛋羹蒸', '隔水蒸']],
-      ['风干腊制', ['风干', '晒干', '阴干', '烘干', '盐干', '烟干', '干制', '熏腊', '腊制']],
-      ['发酵入味', ['糟', '酒糟腌', '泡菜发酵', '乳酸发酵', '酒精发酵']],
-      ['进阶熏制', ['冷熏', '茶熏', '稻草熏', '熏烤']],
-      ['冷食冷泡', ['生食', '生切', '刺身', '冷泡', '冷浸', '酸腌', '酸汁腌', '冷熏生食', '冷盘拼制', '冰镇']],
-      ['油浸油封', ['油浸', '油封', '油泡', '油焖']],
-      ['低温慢熟', ['温火慢煮', '水浴', '隔水慢炖']],
-    ],
-  },
-  {
-    label: '7级·首席灶师',
-    groups: [
-      ['糖壳糖霜', ['挂霜', '拔丝', '琉璃', '糖衣', '糖霜', '糖封', '凝糖', '糖炒']],
-      ['蜜汁焦糖', ['熬糖', '糖煮', '糖熬', '蜜煮', '蜜汁', '焦糖化', '熬浆', '挂浆', '冰糖炖', '果酱熬制', '果脯制作']],
-      ['深度发酵', ['豆豉发酵', '腐乳发酵', '霉菌发酵']],
-      ['珍藏腌渍', ['生腌', '熟腌', '酒渍', '蜜渍', '油渍', '酱渍', '盐藏', '糖藏', '油藏']],
-      ['凝冻结冻', ['凝冻', '胶冻', '冷制甜品', '冻制']],
-      ['封壳烤制', ['泥烤', '盐壳烤', '灰烤']],
-      ['焗烤上色', ['焗', '芝士焗', '烤焗', '蒸烤']],
-      ['酱汁融合', ['奶油打发', '蛋奶融合', '油醋调和', '酱汁融合']],
-    ],
-  },
-  {
-    label: '8级·灶火宗师',
-    groups: [
-      ['宗师复现', ['前7级所有手法的宗师级精度']],
-      ['宴席安排', ['安排多道菜的先后、轻重、冷热、荤素、酒食搭配']],
-      ['种族调味', ['根据不同种族口味偏好调整同一道菜的调味和工序']],
-      ['自创招牌', ['可创造个人招牌工序, 必须建立在已存在的火、水、油、蒸、烤、熏、腌、糖、冷制等传统工艺上']],
-      ['魔法辅炉', ['可使用稳定火焰、恒温炉石、保温符文、洁净水阵等魔法辅助, 不凭空跳过烹饪过程']],
-    ],
-  },
-];
-
-const sauceMethodLevels: MethodLevel[] = [
-  { label: '1级·烧火工', groups: [['基础混合', ['搅拌混合', '研磨捣碎', '切碎拌制', '盐拌', '水调', '油调']]] },
-  { label: '2级·守灶童', groups: [['基础冷制', ['盐渍', '酸渍', '糖渍', '酒渍', '蜜渍', '冷浸', '简单发酵', '粗过滤']]] },
-  { label: '3级·灶台学徒', groups: [['基础热制', ['熬煮', '收汁浓缩', '煮酱', '慢熬', '果酱熬制', '糖浆熬制', '撇沫', '去渣']]] },
-  { label: '4级·行炉工', groups: [['质地控制', ['勾芡', '过筛', '布滤', '压滤', '澄清', '撇油', '面粉糊化', '米浆增稠']]] },
-  { label: '5级·持勺匠', groups: [['稳定融合', ['面糊炒制', '冷乳化', '炒酱', '爆香', '煸香', '香料浸油', '油浸制酱', '酒醋调和']]] },
-  { label: '6级·灶台师傅', groups: [['深层风味', ['焦糖化', '曲菌发酵', '盐渍发酵', '乳酸发酵', '醋酸发酵', '木桶熟成', '陶缸熟成', '烟熏制酱']]] },
-  { label: '7级·首席灶师', groups: [['瞬间控制', ['热乳化', '脱离法', '高级收汁', '黄油乳化', '双层锅隔水乳化', '酒液脱锅', '酸油平衡乳化', '胶质肉汁酱']]] },
-  { label: '8级·灶火宗师', groups: [['规则外组合', ['独创', '复杂组合工序', '萃取', '凝胶化', '自然发酵控制', '复合熟成', '失败风味修复', '奇迹搭配激活']]] },
-];
-
-const drinkMethodLevels: MethodLevel[] = [
-  { label: '1级·烧火工', groups: [['基础出杯', ['混合', '加热', '兑水', '蜜水调制', '简单搅拌', '温饮']]] },
-  { label: '2级·守灶童', groups: [['基础提取', ['冲泡', '压榨', '手挤', '捣汁', '热泡', '简单煮饮', '粗滤', '撇沫']]] },
-  { label: '3级·灶台学徒', groups: [['口感整理', ['捣碎混入', '过滤', '布滤', '沉淀', '分层取液', '果肉悬浮', '谷物熬饮', '奶煮']]] },
-  { label: '4级·行炉工', groups: [['比例调配', ['浸泡', '调配', '冷泡', '酒浸', '蜜浸', '香料浸泡', '酸甜平衡', '冷热调饮']]] },
-  { label: '5级·持勺匠', groups: [['活性变化', ['发酵', '陶壶摇混', '皮囊摇混', '木杯翻摇', '双杯翻注', '二次发酵', '发泡酒', '麦芽糖化', '酵母培养', '香料酒浸制', '利口酒浸制']]] },
-  { label: '6级·灶台师傅', groups: [['高价值酒饮', ['蒸馏', '蒸汽蒸馏', '陈酿', '木桶熟成', '陶缸熟成', '掐头去尾', '花露蒸馏', '草药蒸馏']]] },
-  { label: '7级·首席灶师', groups: [['表演与极端处理', ['点火', '冰封', '酒液火焰处理', '冻析浓缩', '蒸汽热调', '多段调饮', '分层调饮', '高级醒酒']]] },
-  { label: '8级·灶火宗师', groups: [['组合与独创', ['独创', '组合工序', '复合酿造', '蒸馏后陈酿', '陈酿后调配', '冰封后蒸馏', '多基底调和', '奇迹搭配激活']]] },
-];
-
-const activeMethodLevels = computed(() => {
-  if (craftMode.value === 'sauce') return sauceMethodLevels;
-  if (craftMode.value === 'drink') return drinkMethodLevels;
-  return methodLevels;
-});
-const activeTechnique = computed({
-  get: () => techniqueByMode[craftMode.value],
-  set: value => {
-    techniqueByMode[craftMode.value] = value;
-  },
-});
-const activeSelectedLevel = computed({
-  get: () => selectedMethodLevelByMode[craftMode.value],
-  set: value => {
-    selectedMethodLevelByMode[craftMode.value] = value;
-  },
-});
-const activeExpandedLevel = computed({
-  get: () => expandedLevelByMode[craftMode.value],
-  set: value => {
-    expandedLevelByMode[craftMode.value] = value;
-  },
-});
-const expandedMethodGroups = computed(() => activeMethodLevels.value.find(g => g.label === activeExpandedLevel.value)?.groups ?? []);
 const isSatchelView = computed(() => inventoryView.value === 'satchel');
 const canUseStorageHere = computed(() => ['酒馆', '库房炉台', '农田酒窖'].includes(game.currentSceneType));
 const canUseActiveInventory = computed(() => isSatchelView.value || canUseStorageHere.value);
 const activeInventory = computed(() => (isSatchelView.value ? game.satchel : game.inventory));
 const visibleItems = computed(() => (currentCat.value === '全部' ? activeInventory.value : activeInventory.value.filter(i => i.category === currentCat.value)));
+const organizeAllLabel = computed(() => (currentCat.value === '全部' ? '全部整理入库' : `${currentCat.value}全入库`));
 const groupedByCat = computed(() => {
   const out: Record<string, InventoryItem[]> = {};
   for (const it of visibleItems.value) {
@@ -201,7 +46,7 @@ const basketSummary = computed(() => summarizeSlots(slots.value));
 const serveTotal = computed(() =>
   slots.value.reduce((total, slot) => {
     const item = findItem(slot.itemId);
-    return total + (item?.priceCopper ?? 0) * slot.qty;
+    return total + game.salePriceForItem(item) * slot.qty;
   }, 0),
 );
 const serveSelection = computed(() => selectedCraftItems());
@@ -212,6 +57,19 @@ const serveHasRawItems = computed(() => serveSelection.value.some(item => item.c
 const serveGuests = computed(() => game.orderableGuestGroups());
 const selectedServeGuest = computed(() => serveGuests.value.find(group => group.id === selectedServeGuestId.value));
 const mustSelectServeGuest = computed(() => serveGuests.value.length > 0);
+const itemUseTargets = computed(() => [
+  { type: '自己', name: game.protagonist.name || '主角', value: `主角：${game.protagonist.name || '主角'}` },
+  ...game.heroines.map(heroine => ({
+    type: '人物',
+    name: heroine.name,
+    value: `人物：${heroine.name}`,
+  })),
+  ...game.regions.map(region => ({
+    type: '区域',
+    name: region.name,
+    value: `酒馆区域：${region.name}`,
+  })),
+]);
 watch(
   serveGuests,
   guests => {
@@ -282,6 +140,10 @@ function canSaveRecipe(it: InventoryItem) {
   return Boolean(it.recipeSource?.ingredients?.length) && ['成品', '酒水', '调料'].includes(it.category);
 }
 
+function isPendingCraft(it: InventoryItem) {
+  return it.name.startsWith('待命名') || it.tags.includes('待判定');
+}
+
 function recipeButtonText(it: InventoryItem) {
   if (!canSaveRecipe(it)) return '缺少材料记录';
   return game.isRecipeSavedForItem(it) ? '已保存' : '保存配方';
@@ -293,6 +155,16 @@ function saveRecipe(it: InventoryItem) {
     return;
   }
   game.saveRecipeFromInventoryItem(it.id);
+}
+
+function retryPendingCraft(it: InventoryItem) {
+  if (!isPendingCraft(it)) return;
+  game.retryPendingCraftResult();
+}
+
+function discardPendingCraft(it: InventoryItem) {
+  if (!isPendingCraft(it)) return;
+  game.discardPendingCraftItem(it.id);
 }
 
 function openMovePanel(it: InventoryItem, direction: MoveDirection) {
@@ -320,6 +192,28 @@ function maxMoveQty(it: InventoryItem) {
   setMoveQty(it, it.qty);
 }
 
+function openUsePanel(it: InventoryItem, source: InventorySource) {
+  if (source === 'storage' && !canUseStorageHere.value) {
+    game.pushLog('提示', '当前不在酒馆内，不能直接使用库房物品。请使用个人行囊里的物品，或先回酒馆。');
+    return;
+  }
+  activeMove.value = null;
+  activeUse.value = {
+    itemId: it.id,
+    source,
+    target: itemUseTargets.value[0]?.value ?? `主角：${game.protagonist.name || '主角'}`,
+  };
+}
+
+function isUsePanelOpen(it: InventoryItem) {
+  return activeUse.value?.itemId === it.id && activeUse.value.source === inventoryView.value;
+}
+
+function setUseTarget(value: string) {
+  if (!activeUse.value) return;
+  activeUse.value.target = value;
+}
+
 async function confirmMove(it: InventoryItem) {
   if (!activeMove.value || activeMove.value.itemId !== it.id) return;
   if (activeMove.value.direction === 'to_storage') await organizeToStorage(it, activeMove.value.qty);
@@ -336,11 +230,42 @@ async function organizeToStorage(it: InventoryItem, qty: number) {
     type: 'INVENTORY_MOVE_TO_STORAGE',
     title: '整理入库',
     logText: `整理入库 · ${it.name} ×${qty}`,
-    autoSend: true,
-    preserveLocalState: true,
+    queueDraft: true,
   });
   if (result.ok) activeMove.value = null;
   else game.pushLog('提示', result.message);
+}
+
+async function organizeAllVisibleToStorage() {
+  if (!isSatchelView.value || visibleItems.value.length === 0) return;
+  activeMove.value = null;
+  const targets = visibleItems.value.map(item => ({ id: item.id, name: item.name }));
+  let movedCount = 0;
+  for (const target of targets) {
+    const current = game.satchel.find(item => item.id === target.id);
+    if (!current || current.qty <= 0) continue;
+    const qty = current.qty;
+    const result = await game.executePseudoZeroAction({
+      type: 'INVENTORY_MOVE_TO_STORAGE',
+      itemId: current.id,
+      qty,
+    }, {
+      type: 'INVENTORY_MOVE_TO_STORAGE',
+      title: '整理入库',
+      logText: `整理入库 · ${current.name} ×${qty}`,
+      queueDraft: true,
+    });
+    if (result.ok) movedCount += 1;
+    else game.pushLog('提示', result.message);
+  }
+  if (movedCount > 0) {
+    game.pushLog('提示', `${organizeAllLabel.value}已加入本回合行动，共 ${movedCount} 类。`, {
+      source: 'engine',
+      authoritative: true,
+      tone: 'cyan',
+      actionType: 'INVENTORY_MOVE_TO_STORAGE',
+    });
+  }
 }
 
 async function takeToSatchel(it: InventoryItem, qty: number) {
@@ -353,14 +278,14 @@ async function takeToSatchel(it: InventoryItem, qty: number) {
     type: 'INVENTORY_MOVE_TO_SATCHEL',
     title: '取出到行囊',
     logText: `取出到行囊 · ${it.name} ×${qty}`,
-    autoSend: true,
-    preserveLocalState: true,
+    queueDraft: true,
   });
   if (result.ok) activeMove.value = null;
   else game.pushLog('提示', result.message);
 }
 
 async function useInventoryItem(it: InventoryItem, source: InventorySource) {
+  const target = activeUse.value?.itemId === it.id ? activeUse.value.target : itemUseTargets.value[0]?.value;
   if (source === 'storage' && !canUseStorageHere.value) {
     game.pushLog('提示', '当前不在酒馆内，不能直接使用库房物品。请使用个人行囊里的物品，或先回酒馆。');
     return;
@@ -369,36 +294,16 @@ async function useInventoryItem(it: InventoryItem, source: InventorySource) {
     type: 'USE_ITEM',
     itemId: it.id,
     source,
+    target,
   }, {
     type: 'USE_ITEM',
     title: `使用${it.name}`,
-    aiHint: '请叙述玩家使用该物品的过程；若产生明确短期影响，请按本回合提示写入临时状态。',
-    logText: `使用物品 · ${source === 'satchel' ? '行囊' : '库房'} · ${it.name}`,
-    preserveLocalState: true,
+    aiHint: `请叙述玩家对「${target || '主角'}」使用该物品的过程；若产生明确短期影响，请按本回合提示写入对应目标的临时状态。`,
+    logText: `使用物品 · ${source === 'satchel' ? '行囊' : '库房'} · ${it.name} · ${target || '主角'}`,
+    queueDraft: true,
   });
-  if (!result.ok) game.pushLog('提示', result.message);
-}
-
-function isLevelUnlocked(label: string) {
-  const idx = activeMethodLevels.value.findIndex(level => level.label === label);
-  return idx >= 0 && idx < game.protagonist.cookingLevel;
-}
-
-function randomMethodFrom(level: MethodLevel) {
-  const pool = level.groups.flatMap(([, methods]) => methods);
-  return pool[Math.floor(Math.random() * pool.length)] ?? level.groups[0][1][0];
-}
-
-function pickLevel(level: MethodLevel) {
-  if (!isLevelUnlocked(level.label)) return;
-  activeSelectedLevel.value = level.label;
-  activeTechnique.value = randomMethodFrom(level);
-}
-
-function toggleLevel(level: MethodLevel) {
-  if (!isLevelUnlocked(level.label)) return;
-  activeExpandedLevel.value = activeExpandedLevel.value === level.label ? null : level.label;
-  activeSelectedLevel.value = level.label;
+  if (result.ok) activeUse.value = null;
+  else game.pushLog('提示', result.message);
 }
 
 function addToSlots(it: InventoryItem) {
@@ -453,18 +358,17 @@ function selectedCraftItems() {
 async function recordCraftAction(mode: CraftMode) {
   if (!basketSummary.value) return;
   craftMode.value = mode;
-  const technique = techniqueByMode[mode];
   const summaryBeforeAction = basketSummary.value;
   const result = await game.executePseudoZeroAction({
     type: 'COOK_DISH',
     mode,
-    technique,
     items: selectedCraftItems(),
   }, {
     type: 'COOK_DISH',
     title: craftModeLabels[mode],
+    inputText: `玩家用这些材料${craftModeLabels[mode]}：${summaryBeforeAction}。`,
     aiHint: '请按对应生成引擎叙述制作过程, 并输出 <craft_result> 隐藏数据块供前端入库。',
-    logText: `${craftModeLabels[mode]} · ${technique} · ${summaryBeforeAction}`,
+    logText: `${craftModeLabels[mode]} · ${summaryBeforeAction}`,
     preserveLocalState: true,
   });
   if (!result.ok) {
@@ -544,6 +448,14 @@ function qualityTone(q?: InventoryItem['quality']) {
         <div class="sub">行囊使用与入库 · 库房做菜或上菜 · 让叙事判断结果</div>
       </div>
       <div class="head-actions">
+        <button
+          v-if="isSatchelView"
+          class="pm-btn ghost"
+          :disabled="visibleItems.length === 0"
+          @click="organizeAllVisibleToStorage"
+        >
+          <PmIcon name="check" :size="12" /> {{ organizeAllLabel }}
+        </button>
         <button class="pm-btn ghost" @click="currentCat = '全部'">
           <PmIcon name="flourish" :size="12" /> 全部
         </button>
@@ -606,7 +518,7 @@ function qualityTone(q?: InventoryItem['quality']) {
                   class="recipe-save"
                   :disabled="!canUseActiveInventory"
                   :title="canUseActiveInventory ? '使用这件物品' : '当前不在酒馆内，不能直接使用库房物品'"
-                  @click.stop="useInventoryItem(it, inventoryView)"
+                  @click.stop="openUsePanel(it, inventoryView)"
                 >
                   使用
                 </button>
@@ -616,6 +528,28 @@ function qualityTone(q?: InventoryItem['quality']) {
                 <button v-else class="recipe-save" @click.stop="openMovePanel(it, 'to_satchel')">
                   取出
                 </button>
+              </div>
+              <div v-if="isUsePanelOpen(it)" class="move-popover use-popover" @click.stop>
+                <div class="use-target">
+                  <span class="move-label">使用目标</span>
+                  <div class="use-target-list">
+                    <button
+                      v-for="target in itemUseTargets"
+                      :key="target.value"
+                      type="button"
+                      class="use-target-option"
+                      :class="{ active: activeUse?.target === target.value }"
+                      @click="setUseTarget(target.value)"
+                    >
+                      <span>{{ target.type }}</span>
+                      <strong>{{ target.name }}</strong>
+                    </button>
+                  </div>
+                </div>
+                <div class="move-actions">
+                  <button class="ghost" @click="activeUse = null">取消</button>
+                  <button @click="useInventoryItem(it, inventoryView)">确认使用</button>
+                </div>
               </div>
               <div
                 v-if="isMovePanelOpen(it, isSatchelView ? 'to_storage' : 'to_satchel')"
@@ -641,7 +575,21 @@ function qualityTone(q?: InventoryItem['quality']) {
                 </div>
               </div>
               <button
-                v-if="!isSatchelView && ['成品', '酒水', '调料'].includes(it.category)"
+                v-if="!isSatchelView && isPendingCraft(it)"
+                class="recipe-save"
+                @click.stop="retryPendingCraft(it)"
+              >
+                重读结果
+              </button>
+              <button
+                v-if="!isSatchelView && isPendingCraft(it)"
+                class="recipe-save muted"
+                @click.stop="discardPendingCraft(it)"
+              >
+                丢弃占位
+              </button>
+              <button
+                v-if="!isSatchelView && !isPendingCraft(it) && ['成品', '酒水', '调料'].includes(it.category)"
                 class="recipe-save"
                 :class="{ muted: !canSaveRecipe(it), saved: game.isRecipeSavedForItem(it) }"
                 :disabled="!canSaveRecipe(it)"
@@ -675,9 +623,9 @@ function qualityTone(q?: InventoryItem['quality']) {
             </div>
           </section>
 
-          <section class="method-board">
-            <div class="method-head">
-              <div class="method-label">做法</div>
+          <section class="craft-board">
+            <div class="craft-head">
+              <div class="craft-label">制作</div>
               <div class="craft-tabs">
                 <button
                   v-for="mode in (['cooking', 'sauce', 'drink'] as CraftMode[])"
@@ -690,64 +638,35 @@ function qualityTone(q?: InventoryItem['quality']) {
                 </button>
               </div>
             </div>
-            <div class="level-strip">
-              <div
-                v-for="group in activeMethodLevels"
-                :key="group.label"
-                class="level-entry"
-                :class="{ locked: !isLevelUnlocked(group.label), active: activeSelectedLevel === group.label }"
-              >
-                <button class="level-chip" :disabled="!isLevelUnlocked(group.label)" @click="pickLevel(group)">
-                  {{ group.label }}
-                </button>
-                <button class="fold-chip" :disabled="!isLevelUnlocked(group.label)" @click.stop="toggleLevel(group)">
-                  <PmIcon :name="activeExpandedLevel === group.label ? 'chevron-down' : 'chevron-right'" :size="12" />
-                </button>
-              </div>
-            </div>
-
-            <div v-if="activeExpandedLevel" class="method-groups">
-              <section v-for="[groupName, methods] in expandedMethodGroups" :key="groupName" class="method-group">
-                <h4>{{ groupName }}</h4>
-                <div class="method-strip">
-                  <button
-                    v-for="method in methods"
-                    :key="method"
-                    class="method-chip"
-                    :class="{ active: activeTechnique === method }"
-                    @click="activeTechnique = method"
-                  >
-                    {{ method }}
-                  </button>
-                </div>
-              </section>
-            </div>
-            <div v-else class="method-hint">
-              当前{{ craftModeLabels[craftMode] }}会从「{{ activeSelectedLevel }}」里随机取法: <strong>{{ activeTechnique }}</strong>
-            </div>
           </section>
 
           <div class="cook-preview">
             <span class="label">将写入</span>
-            <p>{{ basketSummary ? `<user>用「${activeTechnique}」${craftModeLabels[craftMode]}「${basketSummary}」。` : '选择物品后会生成一句行动记录。' }}</p>
+            <p>{{ basketSummary ? `用这些材料${craftModeLabels[craftMode]}「${basketSummary}」。` : '选择物品后会生成一句行动记录。' }}</p>
           </div>
 
           <div class="serve-total">
             <span>上菜应收</span>
             <strong>{{ formatCopper(serveTotal) }}</strong>
+            <small>声望 {{ game.reputationSaleText() }}</small>
           </div>
 
           <div v-if="serveGuests.length" class="serve-target">
-            <label>
-              <span>上菜对象</span>
-              <select v-model="selectedServeGuestId">
-                <option value="">选择客人或桌</option>
-                <option v-for="guest in serveGuests" :key="guest.id" :value="guest.id">
-                  {{ guest.label }} · {{ guest.order || guest.guests }}
-                </option>
-              </select>
-            </label>
-            <p v-if="selectedServeGuest">
+            <span>上菜对象</span>
+            <div class="serve-target-list">
+              <button
+                v-for="guest in serveGuests"
+                :key="guest.id"
+                type="button"
+                class="serve-target-option"
+                :class="{ active: selectedServeGuestId === guest.id }"
+                @click="selectedServeGuestId = guest.id"
+              >
+                <strong>{{ guest.label }}</strong>
+                <small>{{ guest.order || guest.guests || '等待上菜' }}</small>
+              </button>
+            </div>
+            <p v-if="selectedServeGuest" class="serve-target-detail">
               {{ selectedServeGuest.guests }}
               <template v-if="selectedServeGuest.order"> · 点单: {{ selectedServeGuest.order }}</template>
             </p>
@@ -984,6 +903,58 @@ function qualityTone(q?: InventoryItem['quality']) {
 .move-actions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.use-popover .move-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.use-target {
+  display: grid;
+  gap: 5px;
+}
+.use-target-list {
+  display: grid;
+  gap: 4px;
+  max-height: 138px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid rgba(131, 92, 34, 0.34);
+  border-radius: 4px;
+  background: rgba(255, 252, 238, 0.45);
+}
+.use-target-option {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+  padding: 5px 7px;
+  border: 1px solid rgba(131, 92, 34, 0.28);
+  border-radius: 4px;
+  background: rgba(255, 248, 225, 0.66);
+  color: var(--pm-ink);
+  text-align: left;
+}
+.use-target-option:hover {
+  border-color: rgba(170, 121, 45, 0.72);
+  background: rgba(246, 221, 158, 0.68);
+}
+.use-target-option.active {
+  border-color: rgba(167, 121, 45, 0.9);
+  background: linear-gradient(180deg, #f3da90, #c9a04a);
+  box-shadow: inset 0 1px 0 rgba(255, 248, 218, 0.82);
+}
+.use-target-option span {
+  color: var(--pm-ink-dim);
+  font-size: calc(10px * var(--pm-text-scale));
+  font-weight: 700;
+}
+.use-target-option strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pm-ink);
+  font-size: calc(12px * var(--pm-text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .move-controls input {
   width: 100%;
   height: 28px;
@@ -1066,7 +1037,7 @@ function qualityTone(q?: InventoryItem['quality']) {
   width: 24px;
   height: 24px;
 }
-.method-board {
+.craft-board {
   display: grid;
   gap: 8px;
   padding: 10px;
@@ -1074,13 +1045,13 @@ function qualityTone(q?: InventoryItem['quality']) {
   border-radius: 4px;
   background: rgba(255, 245, 215, 0.35);
 }
-.method-head {
+.craft-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-.method-label {
+.craft-label {
   color: var(--pm-ink-dim);
   font-family: var(--pm-font-display);
   font-size: calc(12px * var(--pm-text-scale));
@@ -1105,83 +1076,6 @@ function qualityTone(q?: InventoryItem['quality']) {
 }
 .craft-tab.active {
   background: linear-gradient(180deg, #f3da90, #b88135);
-  color: var(--pm-ink);
-}
-.level-strip,
-.method-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.level-entry {
-  display: inline-flex;
-  align-items: stretch;
-}
-.level-chip,
-.method-chip,
-.fold-chip {
-  border: 1px solid rgba(110, 80, 34, 0.36);
-  border-radius: 4px;
-  background: rgba(255, 249, 232, 0.62);
-  color: var(--pm-ink-soft);
-  font-weight: 700;
-}
-.level-chip {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  padding: 5px 8px;
-  font-size: calc(11px * var(--pm-text-scale));
-}
-.fold-chip {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  border-left: 0;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-}
-.method-chip {
-  padding: 4px 8px;
-  font-size: calc(12px * var(--pm-text-scale));
-}
-.level-entry.active .level-chip,
-.level-entry.active .fold-chip,
-.method-chip.active {
-  background: linear-gradient(180deg, #f3da90, #b88135);
-  border-color: rgba(78, 48, 19, 0.58);
-  color: var(--pm-ink);
-}
-.level-entry.locked {
-  opacity: 0.42;
-}
-.level-entry.locked .level-chip,
-.level-entry.locked .fold-chip {
-  cursor: not-allowed;
-}
-.method-groups {
-  display: grid;
-  gap: 8px;
-  max-height: 238px;
-  overflow: auto;
-  padding-right: 4px;
-}
-.method-group {
-  display: grid;
-  gap: 5px;
-}
-.method-group h4 {
-  margin: 0;
-  color: var(--pm-ink);
-  font-size: calc(12px * var(--pm-text-scale));
-}
-.method-hint {
-  padding: 8px 10px;
-  border-radius: 4px;
-  background: rgba(43, 29, 16, 0.12);
-  color: var(--pm-ink-soft);
-  font-size: calc(12px * var(--pm-text-scale));
-}
-.method-hint strong {
   color: var(--pm-ink);
 }
 .cook-preview {
@@ -1210,6 +1104,10 @@ function qualityTone(q?: InventoryItem['quality']) {
 .serve-total strong {
   color: var(--pm-gold-bright);
 }
+.serve-total small {
+  color: var(--pm-ink-dim);
+  font-size: calc(11px * var(--pm-text-scale));
+}
 .serve-target {
   display: grid;
   gap: 6px;
@@ -1218,22 +1116,57 @@ function qualityTone(q?: InventoryItem['quality']) {
   border-radius: 4px;
   background: rgba(255, 250, 232, 0.42);
 }
-.serve-target label {
-  display: grid;
-  gap: 5px;
-}
 .serve-target span {
   color: var(--pm-ink-dim);
   font-size: calc(12px * var(--pm-text-scale));
+  font-weight: 700;
 }
-.serve-target select {
-  width: 100%;
-  min-height: 32px;
-  border: 1px solid var(--pm-line);
+.serve-target-list {
+  display: grid;
+  gap: 5px;
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid rgba(131, 92, 34, 0.32);
   border-radius: 4px;
-  background: var(--pm-input-bg);
+  background: rgba(255, 252, 238, 0.4);
+}
+.serve-target-option {
+  display: grid;
+  gap: 3px;
+  min-height: 42px;
+  padding: 7px 8px;
+  border: 1px solid rgba(131, 92, 34, 0.28);
+  border-radius: 4px;
+  background: rgba(255, 248, 225, 0.64);
   color: var(--pm-ink);
-  padding: 6px 8px;
+  text-align: left;
+}
+.serve-target-option:hover {
+  border-color: rgba(170, 121, 45, 0.74);
+  background: rgba(246, 221, 158, 0.66);
+}
+.serve-target-option.active {
+  border-color: rgba(167, 121, 45, 0.92);
+  background: linear-gradient(180deg, #f3da90, #c9a04a);
+  box-shadow: inset 0 1px 0 rgba(255, 248, 218, 0.82);
+}
+.serve-target-option strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pm-ink);
+  font-size: calc(12px * var(--pm-text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.serve-target-option small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--pm-ink-dim);
+  font-size: calc(11px * var(--pm-text-scale));
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .serve-target p {
   margin: 0;
@@ -1257,15 +1190,12 @@ function qualityTone(q?: InventoryItem['quality']) {
 
 @media (max-width: 760px) {
   .inv-tabs,
-  .level-strip,
-  .method-strip {
+  .craft-tabs {
     flex-wrap: nowrap;
     overflow-x: auto;
     padding-bottom: 4px;
   }
-  .inv-tab,
-  .level-entry,
-  .method-chip {
+  .inv-tab {
     flex: 0 0 auto;
   }
   .inv-tiles {
@@ -1282,7 +1212,7 @@ function qualityTone(q?: InventoryItem['quality']) {
   .inv-tile-desc {
     display: none;
   }
-  .method-head,
+  .craft-head,
   .bench-actions {
     align-items: stretch;
     flex-direction: column;
@@ -1295,4 +1225,3 @@ function qualityTone(q?: InventoryItem['quality']) {
   }
 }
 </style>
-

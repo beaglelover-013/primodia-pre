@@ -26,6 +26,12 @@ export const primordiaThemes = [
     swatches: ['#170b08', '#3a1b14', '#ead0a4', '#c77a3f', '#a24c38'],
   },
   {
+    id: 'iron-kettle-inn',
+    name: '铁壶酒馆',
+    description: '黑棕木梁、旧账羊皮纸与暗金烛火。',
+    swatches: ['#100906', '#2b1b12', '#eadcc1', '#b78a37', '#7a5d38'],
+  },
+  {
     id: 'moonlit-silver',
     name: '月夜紫银',
     description: '夜幕紫银、深墨背景与冷亮边光。',
@@ -36,6 +42,24 @@ export const primordiaThemes = [
     name: '晨光羊皮',
     description: '明亮纸面、柔金边框与低对比木色。',
     swatches: ['#f3e7c8', '#c4a66d', '#5d3f24', '#d6a953', '#77915d'],
+  },
+  {
+    id: 'mithril-arcana',
+    name: '冷色秘银',
+    description: '蓝黑钢材、秘银刻线与奥术冷光。',
+    swatches: ['#081116', '#172a33', '#dbe8e9', '#8fc7d5', '#4c86a0'],
+  },
+  {
+    id: 'classic-parchment',
+    name: '羊皮卷古典',
+    description: '陈年纸页、墨褐笔迹与蜡封暗红。',
+    swatches: ['#21150d', '#6d5133', '#ead5a8', '#b58a43', '#8c4035'],
+  },
+  {
+    id: 'crimson-empire',
+    name: '深红帝国',
+    description: '黑檀宫墙、勃艮第红与帝国鎏金。',
+    swatches: ['#0d0708', '#3b1018', '#e8d8c1', '#c19a4b', '#861f32'],
   },
 ] as const;
 

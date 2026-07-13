@@ -16,7 +16,7 @@ import {
 const game = useGameStore();
 
 const character = reactive({
-  name: '克斯',
+  name: game.currentHostPersonaName() || game.protagonist.name || '克斯',
   gender: '',
   age: '14',
   race: '人类',
@@ -180,7 +180,7 @@ function clearGeneratedOpening() {
 function resetOpeningWorkshop() {
   const defaultTerritory = openingTerritories.find(item => item.tavernFriendly)?.id || openingTerritories[0]?.id || '';
   Object.assign(character, {
-    name: '克斯',
+    name: game.currentHostPersonaName() || game.protagonist.name || '克斯',
     gender: '',
     age: '14',
     race: '人类',

@@ -80,6 +80,14 @@ import {
   validateTurnContextWorldbookBinding,
   type TurnContextWorldbookBinding,
 } from '../services/turnContextWorldbook';
+import {
+  createRegularGuestFromFields,
+  ensureRegularGuestBookWorldbookEntry,
+  normalizeRegularGuestList,
+  saveRegularGuestBookToWorldbook,
+  type RegularGuestType,
+  type RegularGuestUnit,
+} from '../services/regularGuestWorldbook';
 import { readChatVariable, writeChatVariable } from '../services/variables';
 import type { ActionResultBase, LocationSnapshot } from '../types/domain';
 import { legacyPathAliases } from '../utils/legacyMojibake';
@@ -93,6 +101,7 @@ import {
   type ParsedCharacterBehaviorUpdate,
   type ParsedGuestUpdate,
   type ParsedPromiseUpdate,
+  type ParsedRegularGuestUpdate,
   type ParsedShop,
   type StoryIndexItem,
 } from '../utils/messageParser';
@@ -136,6 +145,19 @@ export function formatCopper(copper: number): string {
   if (p.silver) segs.push(`${p.silver}银`);
   if (p.copper || segs.length === 0) segs.push(`${p.copper}铜`);
   return segs.join(' ');
+}
+
+export function moneyBucketFromCopper(value: number) {
+  const total = Math.max(0, Math.floor(Number(value) || 0));
+  const parts = copperToParts(total);
+  return {
+    铜币: parts.copper,
+    银币: parts.silver,
+    金币: parts.gold,
+    铂金币: parts.platinum,
+    秘银币: parts.mithril,
+    折算合计铜币: total,
+  };
 }
 
 export interface RegionFacility {
@@ -234,7 +256,6 @@ export interface RecipeIngredient {
 
 export interface RecipeSource {
   mode: CraftMode;
-  technique: string;
   ingredients: RecipeIngredient[];
 }
 
@@ -282,6 +303,14 @@ interface TavernNpcActivityPlan {
 const NPC_ACTIVITY_MIN_MINUTES = 90;
 const NPC_ACTIVITY_MIN_SUCCESS_TURNS = 2;
 const DEFAULT_NPC_ACTIVITY_KEEP_TURNS = 3;
+const NPC_ACTIVITY_NEVER_TRIGGERED_MINUTE = -1;
+
+export interface CharacterIncome {
+  职业: string;
+  日收入折合铜币: number;
+  结算方式: string;
+  备注: string;
+}
 
 export interface Heroine {
   id: string;
@@ -303,6 +332,8 @@ export interface Heroine {
   located: string;
   outfit: string;
   gift?: string;
+  personalFundsCopper: number;
+  income: CharacterIncome;
   portraitColor: string;
   bio: string;
   cgSlots?: CharacterCg[];
@@ -390,6 +421,7 @@ export type TabId =
   | 'opening'
   | 'chronicle'
   | 'tavern'
+  | 'regularGuests'
   | 'protagonist'
   | 'inventory'
   | 'recipes'
@@ -443,6 +475,24 @@ export type DraftUndoPatch =
       snapshot: LocalSettlementSnapshot;
       reason: string;
       actionType?: string;
+    }
+  | {
+      type: 'INVENTORY_TRANSFER';
+      direction: 'to_storage' | 'to_satchel';
+      item: InventoryItem;
+      qty: number;
+    }
+  | {
+      type: 'BUY_ITEMS';
+      totalCopper: number;
+      items: Array<{
+        productId: string;
+        name: string;
+        category: string;
+        tags: string[];
+        qty: number;
+      }>;
+      previousStocks: Record<string, number>;
     };
 
 export interface DraftAction {
@@ -450,6 +500,9 @@ export interface DraftAction {
   text: string;
   type?: GameAction['type'] | 'CUSTOM_ACTION' | 'TEXT';
   undoPatch?: DraftUndoPatch;
+  hidden?: boolean;
+  aiHint?: string;
+  settledFact?: string;
 }
 
 export interface GuestGroup {
@@ -488,6 +541,7 @@ export interface StoryActionInput {
   preserveLocalState?: boolean;
   settled?: boolean;
   undoPatch?: DraftUndoPatch;
+  inputText?: string;
 }
 
 export interface PseudoZeroNarrativeOptions {
@@ -496,8 +550,10 @@ export interface PseudoZeroNarrativeOptions {
   aiHint?: string;
   logText?: string;
   autoSend?: boolean;
+  queueDraft?: boolean;
   preserveLocalState?: boolean;
   settled?: boolean;
+  inputText?: string;
 }
 
 export interface BuyActionItem {
@@ -668,7 +724,6 @@ export type GameAction =
   | {
       type: 'COOK_DISH';
       mode: 'cooking' | 'sauce' | 'drink';
-      technique: string;
       items: CraftActionItem[];
     }
   | {
@@ -703,8 +758,21 @@ export interface HealthCheckItem {
 
 type PrimordiaStatData = Record<string, any>;
 
+const OFFICIAL_PRIMORDIA_STAT_TOP_KEYS = new Set([
+  '世界',
+  '酒馆',
+  '主角',
+  '库房',
+  '行囊',
+  '临时状态',
+  '人物羁绊',
+  '农田与酒窖',
+  '街坊商铺',
+]);
+
 declare const getVariables: undefined | ((options?: Record<string, any>) => any);
 declare const getCurrentMessageId: undefined | (() => number);
+declare const substitudeMacros: undefined | ((text: string) => string);
 declare const updateVariablesWith:
   | undefined
   | ((updater: (variables: Record<string, any>) => Record<string, any> | void, options?: Record<string, any>) => Promise<void> | void);
@@ -736,13 +804,51 @@ interface TavernBusinessState {
   guestCap: number;
   visitorChance: number;
   lastVisitorSeed: string;
+  backgroundGroups: BackgroundGuestGroup[];
+  lastBackgroundFlow: string;
 }
 
 interface TavernBusinessVisitorPlan {
   seed: VisitorSeed | null;
-  nextGuests: number;
+  regularGuest: RegularGuestUnit | null;
   shouldInject: boolean;
-  reason: 'closed' | 'full' | 'hit' | 'miss';
+  reason: 'closed' | 'hit' | 'miss' | 'regular';
+}
+
+interface BackgroundOrder {
+  itemId: string;
+  name: string;
+  category: InventoryItem['category'];
+  count: number;
+  unitPriceCopper: number;
+}
+
+interface BackgroundGuestGroup {
+  id: string;
+  groupName: string;
+  count: number;
+  orders: BackgroundOrder[];
+  remainingTurns: number;
+  hint: string;
+}
+
+interface BackgroundInventoryDelta {
+  itemId: string;
+  name: string;
+  category: InventoryItem['category'];
+  delta: number;
+}
+
+interface BackgroundFlowPlan {
+  leavingGroups: BackgroundGuestGroup[];
+  enteringGroup: BackgroundGuestGroup | null;
+  incomeCopper: number;
+  inventoryDeltas: BackgroundInventoryDelta[];
+  nextGroups: BackgroundGuestGroup[];
+  nextCurrentGuests: number;
+  text: string;
+  shouldInject: boolean;
+  reason: 'closed' | 'not_tavern' | 'inactive_hall' | 'no_stock' | 'full' | 'miss' | 'soldout' | 'flow';
 }
 
 interface PrimordiaSaveBody {
@@ -765,12 +871,18 @@ interface PrimordiaSaveBody {
   protagonist: Protagonist;
   business?: TavernBusinessState;
   guestGroups?: GuestGroup[];
+  regularGuests?: RegularGuestUnit[];
+  pendingRegularGuestUpdates?: RegularGuestUnit[];
+  regularGuestBookWorldbookBinding?: WorldbookEntryRef | null;
+  regularGuestBookWorldbookStatus?: string;
   heroines?: Heroine[];
   tavernNpcActivities?: TavernNpcActivity[];
   lastNpcActivityMinute?: number;
   lastNpcActivityTurn?: number;
   successfulNarrationTurn?: number;
   npcActivityKeepTurns?: number;
+  npcActivityMinMinutes?: number;
+  npcActivityMinSuccessTurns?: number;
   npcActivityEnabled?: boolean;
   npcActivityWorldbookLibrary?: NpcActivityWorldbookLibrary | null;
   npcActivityWorldbookBindings?: WorldbookEntryRef[];
@@ -814,6 +926,10 @@ interface LocalSettlementSnapshot {
   protagonist: Protagonist;
   business: TavernBusinessState;
   guestGroups: GuestGroup[];
+  regularGuests: RegularGuestUnit[];
+  pendingRegularGuestUpdates: RegularGuestUnit[];
+  regularGuestBookWorldbookBinding: WorldbookEntryRef | null;
+  regularGuestBookWorldbookStatus: string;
   regions: TavernRegion[];
   heroines: Heroine[];
   tavernNpcActivities: TavernNpcActivity[];
@@ -821,6 +937,8 @@ interface LocalSettlementSnapshot {
   lastNpcActivityTurn: number;
   successfulNarrationTurn: number;
   npcActivityKeepTurns: number;
+  npcActivityMinMinutes: number;
+  npcActivityMinSuccessTurns: number;
   npcActivityEnabled: boolean;
   npcActivityWorldbookLibrary: NpcActivityWorldbookLibrary | null;
   npcActivityWorldbookBindings: WorldbookEntryRef[];
@@ -866,6 +984,64 @@ function clonePlain<T>(value: T): T {
   }
 }
 
+function cleanIdentityName(value: unknown) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  if (/^<\s*user\s*>$/i.test(text)) return '';
+  if (/^\{\{\s*user\s*\}\}$/i.test(text)) return '';
+  if (/unnamed\s+persona/i.test(text)) return '';
+  return text.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
+}
+
+function readRuntimeRecord(): Record<string, any> {
+  const runtime = globalThis as any;
+  const windowRecord = typeof window !== 'undefined' ? (window as any) : null;
+  const parentRecord =
+    typeof window !== 'undefined'
+      ? (() => {
+          try {
+            return window.parent && window.parent !== window ? (window.parent as any) : null;
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+  return runtime?.SillyTavern || windowRecord?.SillyTavern || parentRecord?.SillyTavern || {};
+}
+
+function trySubstituteMacro(text: string) {
+  try {
+    if (typeof substitudeMacros === 'function') return cleanIdentityName(substitudeMacros(text));
+  } catch {
+    /* host macro expansion is optional */
+  }
+  return '';
+}
+
+function readHostPersonaName() {
+  const context = readRuntimeRecord();
+  return (
+    cleanIdentityName(context.name1) ||
+    trySubstituteMacro('{{user}}') ||
+    cleanIdentityName(context.chatMetadata?.persona_name) ||
+    ''
+  );
+}
+
+function replaceOpeningIdentityText(value: unknown, replacements: Array<[string, string]>): unknown {
+  if (typeof value === 'string') {
+    return replacements.reduce((text, [from, to]) => (from && to ? text.replaceAll(from, to) : text), value);
+  }
+  if (Array.isArray(value)) return value.map(item => replaceOpeningIdentityText(item, replacements));
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    Object.keys(record).forEach(key => {
+      record[key] = replaceOpeningIdentityText(record[key], replacements);
+    });
+  }
+  return value;
+}
+
 function readPath<T = any>(source: any, path: string, fallback?: T): T {
   const value = path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), source);
   return (value ?? fallback) as T;
@@ -891,6 +1067,47 @@ function readNumberPath(source: any, paths: string[], fallback?: number): number
   if (typeof value === 'object') return fallback;
   const parsed = Number(String(value).replace(/[^\d.-]/g, ''));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readMoneyCopperPath(source: any, paths: string[], fallback = 0) {
+  for (const path of paths) {
+    const raw = readFirstPath<any>(source, [path], undefined);
+    if (raw === undefined || raw === null || raw === '') continue;
+    if (typeof raw === 'number' || typeof raw === 'string') {
+      return Math.max(0, Math.floor(readNumberPath(source, [path], fallback) ?? fallback));
+    }
+    const record = asRecord(raw);
+    if (Object.keys(record).length) {
+      const total = readNumberPath(record, ['折算合计铜币', '合计铜币', 'totalCopper', 'copperTotal'], undefined);
+      if (total !== undefined) return Math.max(0, Math.floor(total));
+      const copper = readNumberPath(record, ['铜币', 'copper'], 0) ?? 0;
+      const silver = readNumberPath(record, ['银币', 'silver'], 0) ?? 0;
+      const gold = readNumberPath(record, ['金币', 'gold'], 0) ?? 0;
+      const platinum = readNumberPath(record, ['铂金币', 'platinum'], 0) ?? 0;
+      const mithril = readNumberPath(record, ['秘银币', 'mithril'], 0) ?? 0;
+      return Math.max(
+        0,
+        Math.floor(
+          copper +
+            silver * COIN_PER_SILVER +
+            gold * COIN_PER_SILVER * SILVER_PER_GOLD +
+            platinum * COIN_PER_SILVER * SILVER_PER_GOLD * GOLD_PER_PLATINUM +
+            mithril * COIN_PER_SILVER * SILVER_PER_GOLD * GOLD_PER_PLATINUM * PLATINUM_PER_MITHRIL,
+        ),
+      );
+    }
+  }
+  return fallback;
+}
+
+function readCharacterIncome(record: Record<string, any>, fallbackTitle = ''): CharacterIncome {
+  const income = asRecord(readFirstPath(record, ['收入', '个人收入', 'income'], {}));
+  return {
+    职业: String(readFirstPath(income, ['职业', '工作', '来源', 'job'], fallbackTitle) || fallbackTitle),
+    日收入折合铜币: Math.max(0, Math.floor(readNumberPath(income, ['日收入折合铜币', '日薪铜币', '日收入', 'dailyCopper'], 0) ?? 0)),
+    结算方式: String(readFirstPath(income, ['结算方式', '结算', '周期', 'settlement'], '') || ''),
+    备注: String(readFirstPath(income, ['备注', '说明', 'note'], '') || ''),
+  };
 }
 
 function slugId(input: string, fallback: string) {
@@ -1004,10 +1221,10 @@ function parseCopperText(raw: unknown, fallback = 0) {
   const silver = text.match(/(\d+)\s*银/);
   const copper = text.match(/(\d+)\s*铜/);
   const total =
-    (mithril ? Number(mithril[1]) * 1_000_000 : 0) +
-    (platinum ? Number(platinum[1]) * 10_000 : 0) +
-    (gold ? Number(gold[1]) * 1_000 : 0) +
-    (silver ? Number(silver[1]) * 100 : 0) +
+    (mithril ? Number(mithril[1]) * COIN_PER_SILVER * SILVER_PER_GOLD * GOLD_PER_PLATINUM * PLATINUM_PER_MITHRIL : 0) +
+    (platinum ? Number(platinum[1]) * COIN_PER_SILVER * SILVER_PER_GOLD * GOLD_PER_PLATINUM : 0) +
+    (gold ? Number(gold[1]) * COIN_PER_SILVER * SILVER_PER_GOLD : 0) +
+    (silver ? Number(silver[1]) * COIN_PER_SILVER : 0) +
     (copper ? Number(copper[1]) : 0);
   return total > 0 ? total : fallback;
 }
@@ -1339,7 +1556,7 @@ export const useGameStore = defineStore('primordia', () => {
     () => openingWorkshopForced.value || (openingWorkshopEnabled.value && openingRequired.value && !openingCompleted.value),
   );
   const dateText = computed(() => `共栖历 ${calendar.year} 年 · ${months[calendar.monthIndex]}（${seasonText.value}）第 ${calendar.day} 日 · ${weekDayName.value} · ${currentTimeOfDay.value}`);
-  const clockText = computed(() => `约 ${calendar.clock}`);
+  const clockText = computed(() => calendar.clock);
   const lastTickAt = ref(Date.now());
   const lastShopRefreshDay = ref(calendar.year * 12 * 30 + calendar.monthIndex * 30 + calendar.day);
 
@@ -1447,6 +1664,8 @@ export const useGameStore = defineStore('primordia', () => {
             `膀胱「${bladderPhase(h.bladder, h.bladderMax)}」`,
             `心情「${h.mood}」`,
             `位置「${h.located}」`,
+            `个人资金「${formatCopper(h.personalFundsCopper ?? 0)}」`,
+            h.income?.日收入折合铜币 ? `收入「${h.income.职业 || h.title} · 日入${formatCopper(h.income.日收入折合铜币)}」` : '',
           ].filter(Boolean);
           return `${h.name}: ${parts.join('，')}`;
         },
@@ -1482,16 +1701,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function tavernRegionNames() {
-    const pools = effectiveNpcActivityPools();
-    const personalRegions = new Set(
-      Object.values(characterBehaviorLibraries.value)
-        .flatMap(library => library.behaviors ?? [])
-        .map(item => item.region)
-        .filter(Boolean),
-    );
-    return regions.value
-      .map(region => region.name)
-      .filter(name => name && (pools[name] || personalRegions.has(name)));
+    return regions.value.map(region => region.name).filter(Boolean);
   }
 
   function resolveTavernNpcRegion(value: string) {
@@ -1576,6 +1786,21 @@ export const useGameStore = defineStore('primordia', () => {
     return Math.max(1, Math.floor(Number(value) || DEFAULT_NPC_ACTIVITY_KEEP_TURNS));
   }
 
+  function safeNpcActivityMinMinutes(value = npcActivityMinMinutes.value) {
+    return Math.max(0, Math.floor(Number(value) || 0));
+  }
+
+  function safeNpcActivityMinSuccessTurns(value = npcActivityMinSuccessTurns.value) {
+    return Math.max(0, Math.floor(Number(value) || 0));
+  }
+
+  function normalizeLastNpcActivityMinute(value: unknown, lastTurn: unknown) {
+    const normalizedLastTurn = Math.max(0, Math.floor(Number(lastTurn) || 0));
+    if (normalizedLastTurn <= 0) return NPC_ACTIVITY_NEVER_TRIGGERED_MINUTE;
+    const minute = Math.floor(Number(value));
+    return Number.isFinite(minute) ? minute : NPC_ACTIVITY_NEVER_TRIGGERED_MINUTE;
+  }
+
   function normalizeNpcActivity(activity: Partial<TavernNpcActivity>, fallbackTurn = successfulNarrationTurn.value): TavernNpcActivity | null {
     const heroineId = String(activity.heroineId ?? '').trim();
     const heroine = heroines.value.find(item => item.id === heroineId);
@@ -1612,7 +1837,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function activeNpcActivities(referenceTurn = successfulNarrationTurn.value) {
-    if (!npcActivityEnabled.value || !npcActivityWorldbookLibrary.value) return [];
+    if (!npcActivityEnabled.value) return [];
     return tavernNpcActivities.value
       .map(item => normalizeNpcActivity(item, referenceTurn))
       .filter((item): item is TavernNpcActivity => Boolean(item) && (item.expiresTurn ?? 0) > referenceTurn);
@@ -1650,28 +1875,90 @@ export const useGameStore = defineStore('primordia', () => {
     } satisfies TavernNpcActivity;
   }
 
-  function prepareTavernNpcActivityPlan(actionText: string): TavernNpcActivityPlan | null {
-    if (!npcActivityEnabled.value || !npcActivityWorldbookLibrary.value) return null;
+  function availableNpcActivityRegions(heroine: Heroine, targetRegions: string[]) {
+    const personalRegions = new Set(
+      (characterBehaviorLibraries.value[heroine.id]?.behaviors ?? [])
+        .filter(item => item.behavior)
+        .map(item => item.region),
+    );
+    const globalPools = effectiveNpcActivityPools();
+    return targetRegions.filter(region => personalRegions.has(region) || Boolean(globalPools[region]?.length));
+  }
+
+  function prepareTavernNpcActivityPlan(actionText: string, options: { logSkip?: boolean } = {}): TavernNpcActivityPlan | null {
+    const logSkip = (reason: string) => {
+      if (!options.logSkip || !npcActivityEnabled.value) return;
+      pushLog('提示', `伪活人化未触发：${reason}`, {
+        source: 'engine',
+        authoritative: true,
+        tone: 'amber',
+        actionType: 'NPC_ACTIVITY',
+      });
+    };
+    if (!npcActivityEnabled.value) return null;
     const nowMinute = currentSerialMinute();
-    if (nowMinute - lastNpcActivityMinute.value < NPC_ACTIVITY_MIN_MINUTES) return null;
-    if (successfulNarrationTurn.value - lastNpcActivityTurn.value < NPC_ACTIVITY_MIN_SUCCESS_TURNS) return null;
+    const hasPreviousActivityMinute = lastNpcActivityMinute.value >= 0;
+    const minuteGap = hasPreviousActivityMinute ? nowMinute - lastNpcActivityMinute.value : Number.POSITIVE_INFINITY;
+    const minMinutes = safeNpcActivityMinMinutes();
+    if (hasPreviousActivityMinute && minuteGap < minMinutes) {
+      logSkip(`时间冷却未到，已过 ${Math.max(0, minuteGap)} 分钟，需要 ${minMinutes} 分钟。`);
+      return null;
+    }
+    const turnGap = successfulNarrationTurn.value - lastNpcActivityTurn.value;
+    const minTurns = safeNpcActivityMinSuccessTurns();
+    if (turnGap < minTurns) {
+      logSkip(`正文回合冷却未到，已过 ${Math.max(0, turnGap)} 回合，需要 ${minTurns} 回合。`);
+      return null;
+    }
 
     const targetRegions = npcActivityTargetRegions();
-    if (!targetRegions.length) return null;
+    if (!targetRegions.length) {
+      logSkip('当前没有可用酒馆区域。');
+      return null;
+    }
     const busyHeroineIds = new Set(activeNpcActivities().map(entry => entry.heroineId));
 
-    let candidates = heroines.value
-      .map(heroine => ({ heroine, fromRegion: resolveTavernNpcRegion(heroine.located) }))
-      .filter(item => item.fromRegion && !busyHeroineIds.has(item.heroine.id) && !isHeroineLockedForNpcActivity(item.heroine, actionText));
+    const rawCandidates = heroines.value.map(heroine => ({ heroine, fromRegion: resolveTavernNpcRegion(heroine.located) }));
+    const candidatesWithoutRegion = rawCandidates.filter(item => !item.fromRegion);
+    const busyCandidates = rawCandidates.filter(item => item.fromRegion && busyHeroineIds.has(item.heroine.id));
+    const lockedCandidates = rawCandidates.filter(
+      item => item.fromRegion && !busyHeroineIds.has(item.heroine.id) && isHeroineLockedForNpcActivity(item.heroine, actionText),
+    );
+    let candidates = rawCandidates.filter(
+      item => item.fromRegion && !busyHeroineIds.has(item.heroine.id) && !isHeroineLockedForNpcActivity(item.heroine, actionText),
+    );
+    if (!candidates.length) {
+      logSkip(
+        [
+          `没有可行动配角`,
+          candidatesWithoutRegion.length ? `${candidatesWithoutRegion.length} 位位置不在酒馆区域` : '',
+          busyCandidates.length ? `${busyCandidates.length} 位已有后台动向` : '',
+          lockedCandidates.length ? `${lockedCandidates.length} 位正在本回合交互或与玩家同区域` : '',
+        ].filter(Boolean).join('；'),
+      );
+      return null;
+    }
 
     if (isLowActivityTime() && candidates.length > 2) {
       candidates = [...candidates].sort(() => Math.random() - 0.5).slice(0, Math.max(1, Math.ceil(candidates.length / 3)));
     }
 
+    const noRegionBehavior: string[] = [];
     const entries = candidates.map(({ heroine, fromRegion }) => {
-      const toRegion = pickRandom(targetRegions) ?? fromRegion;
+      const availableRegions = availableNpcActivityRegions(heroine, targetRegions);
+      if (!availableRegions.length) noRegionBehavior.push(heroine.name);
+      const toRegion = pickRandom(availableRegions);
+      if (!toRegion) return null;
       return buildNpcActivityEntry(heroine, fromRegion, toRegion, 'auto');
     }).filter((entry): entry is TavernNpcActivity => Boolean(entry));
+    if (!entries.length) {
+      logSkip(
+        noRegionBehavior.length
+          ? `候选配角没有匹配当前目标区域的个人行为或全局后备行为：${noRegionBehavior.join('、')}。`
+          : '候选配角没有抽到可用行为。',
+      );
+      return null;
+    }
 
     const byRegion = new Map<string, TavernNpcActivity[]>();
     entries.forEach(entry => {
@@ -1689,7 +1976,7 @@ export const useGameStore = defineStore('primordia', () => {
       });
     });
 
-    return entries.length ? { entries, serialMinute: nowMinute } : null;
+    return { entries, serialMinute: nowMinute };
   }
 
   function formatNpcActivityLines(entries: TavernNpcActivity[], referenceTurn = successfulNarrationTurn.value) {
@@ -1702,13 +1989,26 @@ export const useGameStore = defineStore('primordia', () => {
     });
   }
 
+  function formatNpcActivityContextLines(entries: TavernNpcActivity[], referenceTurn = successfulNarrationTurn.value) {
+    return entries.map(entry => {
+      const behaviors = entry.behaviors
+        .map(item => normalizeNpcBehaviorCandidate(item).replace(/^交谈[:：]/, '闲谈'))
+        .filter(Boolean);
+      const remaining = Math.max(1, (entry.expiresTurn ?? (referenceTurn + safeNpcActivityKeepTurns())) - referenceTurn);
+      return `- ${entry.heroineName}: 当前在「${entry.toRegion}」；后台行为：${behaviors.join('、')}；持续：剩余 ${remaining} 回合。`;
+    });
+  }
+
   function formatTavernNpcActivityPlan(plan: TavernNpcActivityPlan | null) {
     const existing = activeNpcActivities();
     const planEntries = plan?.entries ?? [];
     const merged = [...existing, ...planEntries.filter(entry => !existing.some(item => item.heroineId === entry.heroineId))];
     if (!merged.length) return '';
     return [
-      ...formatNpcActivityLines(merged),
+      '【配角后台动向｜前端权威】',
+      '以下是酒馆里与玩家行动同时发生的配角后台行为。它们不是玩家行动，也不是让你重新抽取行为的指令。',
+      '叙述时请把它们当作当前事实：如果镜头、声音、地点或玩家关注与该角色有关，可以自然承接；如果无关，只作为背景存在，不要打断主要互动。',
+      ...formatNpcActivityContextLines(merged),
     ].join('\n');
   }
 
@@ -1735,7 +2035,8 @@ export const useGameStore = defineStore('primordia', () => {
     lastNpcActivityMinute.value = plan.serialMinute;
     lastNpcActivityTurn.value = completedTurn;
     markLocalStateDirty();
-    pushLog('系统', `配角动向已刷新 ${normalizedEntries.length} 位。`, {
+    const activityLines = formatNpcActivityLines(normalizedEntries, completedTurn);
+    pushLog('系统', `配角动向已刷新 ${normalizedEntries.length} 位：${activityLines.join('；')}`, {
       source: 'engine',
       authoritative: true,
       tone: 'cyan',
@@ -1745,7 +2046,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function commitManualWorkerAssignNpcActivities(completedTurn = successfulNarrationTurn.value) {
-    if (!npcActivityEnabled.value || !npcActivityWorldbookLibrary.value) return false;
+    if (!npcActivityEnabled.value) return false;
     const manualEntries = draftActions.value
       .filter(action => action.type === 'WORKER_ASSIGN' && action.undoPatch?.type === 'WORKER_ASSIGN')
       .map(action => {
@@ -1769,7 +2070,8 @@ export const useGameStore = defineStore('primordia', () => {
     const remaining = activeNpcActivities(completedTurn).filter(entry => !byHeroineId.has(entry.heroineId));
     tavernNpcActivities.value = [...manualEntries.map(entry => clonePlain(entry)), ...remaining].slice(0, 48);
     markLocalStateDirty();
-    pushLog('系统', `手动分配已生成配角动向 ${manualEntries.length} 条。`, {
+    const activityLines = formatNpcActivityLines(manualEntries, completedTurn);
+    pushLog('系统', `手动分配已生成配角动向 ${manualEntries.length} 条：${activityLines.join('；')}`, {
       source: 'engine',
       authoritative: true,
       tone: 'cyan',
@@ -1804,7 +2106,6 @@ export const useGameStore = defineStore('primordia', () => {
         return true;
       }
       npcActivityWorldbookLibrary.value = null;
-      npcActivityEnabled.value = false;
       markLocalStateDirty();
       await writeChatSave();
       pushLog('提示', result.message, {
@@ -1819,7 +2120,6 @@ export const useGameStore = defineStore('primordia', () => {
       npcActivityWorldbookStatus.value = message;
       npcActivityWorldbookErrors.value = [message];
       npcActivityWorldbookLibrary.value = null;
-      npcActivityEnabled.value = false;
       markLocalStateDirty();
       await writeChatSave();
       pushLog('提示', message, {
@@ -1840,7 +2140,6 @@ export const useGameStore = defineStore('primordia', () => {
         npcActivityWorldbookStatus.value = message;
         npcActivityWorldbookErrors.value = [];
         npcActivityWorldbookLibrary.value = null;
-        npcActivityEnabled.value = false;
         markLocalStateDirty();
         await writeChatSave();
         pushLog('提示', message, {
@@ -1868,7 +2167,6 @@ export const useGameStore = defineStore('primordia', () => {
         return true;
       }
       npcActivityWorldbookLibrary.value = null;
-      npcActivityEnabled.value = false;
       markLocalStateDirty();
       await writeChatSave();
       pushLog('提示', result.message, {
@@ -1883,7 +2181,6 @@ export const useGameStore = defineStore('primordia', () => {
       npcActivityWorldbookStatus.value = message;
       npcActivityWorldbookErrors.value = [message];
       npcActivityWorldbookLibrary.value = null;
-      npcActivityEnabled.value = false;
       markLocalStateDirty();
       await writeChatSave();
       pushLog('提示', message, {
@@ -1944,29 +2241,22 @@ export const useGameStore = defineStore('primordia', () => {
   async function clearNpcActivityWorldbookBindings() {
     npcActivityWorldbookBindings.value = [];
     npcActivityWorldbookLibrary.value = null;
-    npcActivityEnabled.value = false;
-    npcActivityWorldbookStatus.value = '伪活人化已关闭：未绑定世界书行为库。';
+    npcActivityWorldbookStatus.value = npcActivityEnabled.value
+      ? '全局后备行为库已清空；伪活人化继续使用各角色个人行为库。'
+      : '全局后备行为库已清空。';
     npcActivityWorldbookErrors.value = [];
     markLocalStateDirty();
     await writeChatSave();
   }
 
   async function setNpcActivityEnabled(enabled: boolean) {
-    if (enabled && !npcActivityWorldbookLibrary.value) {
-      npcActivityEnabled.value = false;
-      npcActivityWorldbookStatus.value = '伪活人化未开启：请先成功读取一个世界书行为库。';
-      markLocalStateDirty();
-      await writeChatSave();
-      pushLog('提示', npcActivityWorldbookStatus.value, {
-        source: 'engine',
-        authoritative: true,
-        tone: 'amber',
-        actionType: 'NPC_ACTIVITY_WORLDBOOK',
-      });
-      return false;
-    }
     npcActivityEnabled.value = enabled;
-    npcActivityWorldbookStatus.value = enabled ? '伪活人化已开启。' : '伪活人化已关闭。';
+    if (enabled && lastNpcActivityTurn.value <= 0) lastNpcActivityMinute.value = NPC_ACTIVITY_NEVER_TRIGGERED_MINUTE;
+    npcActivityWorldbookStatus.value = enabled
+      ? npcActivityWorldbookLibrary.value
+        ? '伪活人化已开启；全局行为库作为个人行为的后备。'
+        : '伪活人化已开启；当前仅使用各角色个人行为库。'
+      : '伪活人化已关闭。';
     markLocalStateDirty();
     await writeChatSave();
     pushLog('系统', npcActivityWorldbookStatus.value, {
@@ -1980,6 +2270,18 @@ export const useGameStore = defineStore('primordia', () => {
 
   async function setNpcActivityKeepTurns(value: number) {
     npcActivityKeepTurns.value = safeNpcActivityKeepTurns(value);
+    markLocalStateDirty();
+    await writeChatSave();
+  }
+
+  async function setNpcActivityMinMinutes(value: number) {
+    npcActivityMinMinutes.value = safeNpcActivityMinMinutes(value);
+    markLocalStateDirty();
+    await writeChatSave();
+  }
+
+  async function setNpcActivityMinSuccessTurns(value: number) {
+    npcActivityMinSuccessTurns.value = safeNpcActivityMinSuccessTurns(value);
     markLocalStateDirty();
     await writeChatSave();
   }
@@ -2335,10 +2637,74 @@ export const useGameStore = defineStore('primordia', () => {
   const treasuryText = computed(() => formatCopper(treasuryCopper.value));
 
   /* 声望与精力 */
-  const reputation = ref(62);
+  const REPUTATION_MAX = 9999;
+  const reputation = ref(0);
   const energy = reactive({ value: 78, max: 100 });
+  const reputationSaleStages = [
+    { index: 1, min: 0, max: 200, label: '无人知晓', multiplier: 1.1 },
+    { index: 2, min: 200, max: 1000, label: '略有耳闻', multiplier: 1.2 },
+    { index: 3, min: 1000, max: 3000, label: '小有名气', multiplier: 1.4 },
+    { index: 4, min: 3000, max: 5000, label: '远近闻名', multiplier: 1.7 },
+    { index: 5, min: 5000, max: 9999, label: '声名远扬', multiplier: 2 },
+  ] as const;
+  function clampReputation(value: unknown) {
+    return Math.max(0, Math.min(REPUTATION_MAX, Math.floor(Number(value) || 0)));
+  }
+  function reputationStageForValue(value: unknown) {
+    const safeValue = clampReputation(value);
+    return [...reputationSaleStages].reverse().find(stage => safeValue >= stage.min) ?? reputationSaleStages[0];
+  }
+  function reputationMvuSnapshot(value = reputation.value) {
+    const safeValue = clampReputation(value);
+    const stage = reputationStageForValue(safeValue);
+    return {
+      数值: safeValue,
+      阶段: stage.index,
+      名称: stage.label,
+      乘数: stage.multiplier,
+      范围: stage.index >= 5 ? `${stage.min}+` : `${stage.min}-${stage.max}`,
+    };
+  }
+  function reputationValueFromStageName(value: unknown) {
+    const text = String(value ?? '').trim();
+    if (!text) return undefined;
+    return reputationSaleStages.find(stage => stage.label === text)?.min;
+  }
+  function readReputationFromMvuData(data: PrimordiaStatData) {
+    const raw = readFirstPath<any>(data, legacyPathAliases('酒馆.声望'), undefined);
+    if (raw !== undefined && raw !== null && raw !== '') {
+      if (typeof raw === 'number' || typeof raw === 'string') {
+        const named = reputationValueFromStageName(raw);
+        return named ?? clampReputation(readNumberPath({ raw }, ['raw'], reputation.value));
+      }
+      const record = asRecord(raw);
+      const score = readNumberPath(record, ['数值', '值', 'score', 'value'], undefined);
+      if (score !== undefined) return clampReputation(score);
+      const named = reputationValueFromStageName(readFirstPath(record, ['名称', '阶段名', '声望名', 'label', 'name'], ''));
+      if (named !== undefined) return named;
+    }
+    const scoreAlias = readNumberPath(data, ['酒馆.声望值', '酒馆.声望数值', '酒馆.reputation'], undefined);
+    if (scoreAlias !== undefined) return clampReputation(scoreAlias);
+    return reputationValueFromStageName(readFirstPath(data, ['酒馆.声望名', '酒馆.声望名称'], ''));
+  }
+  const reputationSaleStage = computed(() => {
+    return reputationStageForValue(reputation.value);
+  });
+  function salePriceFromBase(baseCopper: number) {
+    const base = Math.max(0, Math.floor(Number(baseCopper) || 0));
+    if (base <= 0) return 0;
+    return Math.max(1, Math.floor(base * reputationSaleStage.value.multiplier));
+  }
+  function salePriceForItem(item: Pick<InventoryItem, 'priceCopper'> | null | undefined) {
+    return salePriceFromBase(item?.priceCopper ?? 0);
+  }
+  function reputationSaleText() {
+    const stage = reputationSaleStage.value;
+    const cap = stage.index >= 5 ? `${stage.min}+` : stage.max;
+    return `${stage.label} ${clampReputation(reputation.value)}/${cap} ×${stage.multiplier}`;
+  }
   const protagonist = reactive<Protagonist>({
-    name: '<user>',
+    name: readHostPersonaName() || '<user>',
     race: '人类',
     title: '酒馆老板',
     cookingLevel: 3,
@@ -2433,13 +2799,39 @@ export const useGameStore = defineStore('primordia', () => {
   const recipes = ref<RecipeEntry[]>([]);
   const pendingCraftSources = ref<Array<{ craftId: string; source: RecipeSource; createdAt: number }>>([]);
   const DEFAULT_BUSINESS_VISITOR_CHANCE = 30;
+  const REGULAR_GUEST_REVISIT_CHANCE = 8;
   const DEFAULT_BUSINESS_GUEST_CAP = 12;
+  const BACKGROUND_FLOW_CLEANLINESS_CHANCE: Record<TavernRegion['condition'], number> = {
+    崭新: 0.85,
+    整洁: 0.75,
+    良好: 0.6,
+    忙乱: 0.4,
+    肮脏: 0.2,
+    破损: 0.08,
+    停用: 0,
+    升级中: 0,
+  };
+  const BACKGROUND_CUSTOMER_TEMPLATES = [
+    { name: '下工客人', prefers: ['热汤', '汤', '麦酒', '面包'], hint: '累了一天，话少，吃得快，不主动搭话' },
+    { name: '附近居民', prefers: ['热汤', '炖', '面包', '麦酒'], hint: '熟悉附近街道，简单吃喝后继续办自己的事' },
+    { name: '路过行商', prefers: ['面包', '麦酒', '酒', '便携'], hint: '只想歇脚，顺手买点能快速入口的东西' },
+    { name: '巡逻卫兵', prefers: ['麦酒', '热汤', '肉', '炖'], hint: '压低声音交谈，停留不久，不打扰店里的主要谈话' },
+    { name: '短暂停脚的旅人', prefers: ['热汤', '面包', '酒', '水'], hint: '带着路上的风尘，只想暖暖身子' },
+    { name: '本地老人', prefers: ['热汤', '粥', '软', '茶'], hint: '动作慢，坐得安静，吃完会把桌面收得很齐' },
+    { name: '学徒帮工', prefers: ['面包', '麦酒', '甜', '热汤'], hint: '钱不多，点得简单，坐在不起眼的位置' },
+  ];
   const isBusinessOpen = ref(false);
   const currentGuests = ref(0);
   const guestCap = ref(DEFAULT_BUSINESS_GUEST_CAP);
   const visitorChance = ref(DEFAULT_BUSINESS_VISITOR_CHANCE);
   const lastVisitorSeed = ref('');
+  const backgroundGroups = ref<BackgroundGuestGroup[]>([]);
+  const lastBackgroundFlow = ref('');
   const guestGroups = ref<GuestGroup[]>([]);
+  const regularGuests = ref<RegularGuestUnit[]>([]);
+  const pendingRegularGuestUpdates = ref<RegularGuestUnit[]>([]);
+  const regularGuestBookWorldbookBinding = ref<WorldbookEntryRef | null>(null);
+  const regularGuestBookWorldbookStatus = ref('常客簿世界书副本尚未同步。');
 
   /* 女主羁绊 */
   const stageNames = ['初识', '熟悉', '信任', '牵挂', '亲近', '默契', '羁绊', '生死相托'];
@@ -2448,10 +2840,12 @@ export const useGameStore = defineStore('primordia', () => {
   const characterBehaviorLibraries = ref<Record<string, CharacterBehaviorLibrary>>({});
   const heroinePortraitColors = ['#8f5d3f', '#7b6a42', '#6f5f93', '#4d7a72', '#9a5a63', '#80613a'];
   const tavernNpcActivities = ref<TavernNpcActivity[]>([]);
-  const lastNpcActivityMinute = ref(currentSerialMinute());
+  const lastNpcActivityMinute = ref(NPC_ACTIVITY_NEVER_TRIGGERED_MINUTE);
   const lastNpcActivityTurn = ref(0);
   const successfulNarrationTurn = ref(0);
   const npcActivityKeepTurns = ref(DEFAULT_NPC_ACTIVITY_KEEP_TURNS);
+  const npcActivityMinMinutes = ref(NPC_ACTIVITY_MIN_MINUTES);
+  const npcActivityMinSuccessTurns = ref(NPC_ACTIVITY_MIN_SUCCESS_TURNS);
   const npcActivityEnabled = ref(false);
   const npcActivityWorldbookLibrary = ref<NpcActivityWorldbookLibrary | null>(null);
   const npcActivityWorldbookBindings = ref<WorldbookEntryRef[]>([]);
@@ -2496,13 +2890,15 @@ export const useGameStore = defineStore('primordia', () => {
   ]);
   const draftActions = ref<DraftAction[]>([]);
   const actionDraft = computed({
-    get: () => draftActions.value.map(action => action.text).join('\n'),
+    get: () => draftActions.value.filter(action => !action.hidden).map(action => action.text).join('\n'),
     set: value => {
-      draftActions.value = value
+      const hiddenActions = draftActions.value.filter(action => action.hidden);
+      const visibleActions = value
         .split(/\n+/)
         .map(line => line.trim())
         .filter(Boolean)
         .map((text, index) => ({ id: `draft-manual-${Date.now()}-${index}`, text, type: 'TEXT' }));
+      draftActions.value = [...hiddenActions, ...visibleActions];
     },
   });
   const playerInput = ref<string>('');
@@ -2518,17 +2914,94 @@ export const useGameStore = defineStore('primordia', () => {
   const selectedRegionId = ref<string | null>(null);
 
   /* ---------- 常量与类型 ---------- */
+  function mergeRepeatedActionText(existingText: string, nextText: string, type?: DraftAction['type'] | StoryActionType): string | null {
+    const existing = existingText.trim();
+    const next = nextText.trim();
+    if (!existing || !next) return null;
+
+    if (type === 'FARM_EXPAND') {
+      const pattern = /^(.*?开拓第)([0-9、]+)(号新田畦.*)$/s;
+      const oldMatch = existing.match(pattern);
+      const nextMatch = next.match(pattern);
+      if (oldMatch && nextMatch && oldMatch[1] === nextMatch[1] && oldMatch[3] === nextMatch[3]) {
+        const plots = [...new Set([...oldMatch[2].split('、'), ...nextMatch[2].split('、')].filter(Boolean))];
+        return `${oldMatch[1]}${plots.join('、')}${oldMatch[3]}`;
+      }
+    }
+
+    const quantityPattern = /^(.*?「[^」]+」×)(\d+)(.*)$/s;
+    const oldQty = existing.match(quantityPattern);
+    const nextQty = next.match(quantityPattern);
+    if (oldQty && nextQty && oldQty[1] === nextQty[1] && oldQty[3] === nextQty[3]) {
+      return `${oldQty[1]}${Number(oldQty[2]) + Number(nextQty[2])}${oldQty[3]}`;
+    }
+
+    return null;
+  }
+
+  function mergeMultilineActionText(existingText: string, nextLine: string, type?: DraftAction['type'] | StoryActionType) {
+    const line = nextLine.trim();
+    if (!line) return existingText;
+    const lines = existingText ? existingText.replace(/\s+$/, '').split('\n') : [];
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const merged = mergeRepeatedActionText(lines[index], line, type);
+      if (merged) {
+        lines[index] = merged;
+        return lines.join('\n');
+      }
+    }
+    return lines.length ? `${lines.join('\n')}\n${line}` : line;
+  }
+
+  function aggregateHiddenSettledFacts(actions: DraftAction[]) {
+    return actions.reduce((text, action) => {
+      const fact = action.settledFact?.trim();
+      if (!fact) return text;
+      return mergeMultilineActionText(text, fact, action.type);
+    }, '');
+  }
+
   function appendDraft(line: string, options: { type?: DraftAction['type']; undoPatch?: DraftUndoPatch } = {}) {
     if (!line.trim()) return;
+    const type = options.type ?? 'TEXT';
+    if (!options.undoPatch && type !== 'TEXT') {
+      const existing = draftActions.value.find(action => !action.hidden && action.type === type);
+      const merged = existing ? mergeRepeatedActionText(existing.text, line.trim(), type) : null;
+      if (existing && merged) {
+        existing.text = merged;
+        return;
+      }
+    }
     draftActions.value.push({
       id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       text: line.trim(),
-      type: options.type ?? 'TEXT',
+      type,
       undoPatch: options.undoPatch,
+    });
+  }
+  function appendHiddenDraftRequirement(action: StoryActionInput) {
+    draftActions.value.push({
+      id: `draft-hidden-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      text: action.title,
+      type: action.type,
+      undoPatch: action.undoPatch,
+      hidden: true,
+      aiHint: action.aiHint,
+      settledFact: action.settled === false ? undefined : action.settledFact ?? action.fact,
     });
   }
   function clearActionDraft() {
     draftActions.value = [];
+  }
+  function inventoryItemMatchesDraftPatch(item: InventoryItem, patchItem: InventoryItem) {
+    return (
+      item.id === patchItem.id ||
+      (
+        item.name === patchItem.name &&
+        item.category === patchItem.category &&
+        sameTagSet(item.tags, patchItem.tags)
+      )
+    );
   }
   async function applyDraftUndoPatch(patch?: DraftUndoPatch) {
     if (!patch) return false;
@@ -2554,6 +3027,56 @@ export const useGameStore = defineStore('primordia', () => {
       await restoreLocalSettlement(patch.snapshot, patch.reason);
       return true;
     }
+    if (patch.type === 'INVENTORY_TRANSFER') {
+      const from = patch.direction === 'to_storage' ? inventory.value : satchel.value;
+      const to = patch.direction === 'to_storage' ? satchel.value : inventory.value;
+      const current = from.find(item => inventoryItemMatchesDraftPatch(item, patch.item));
+      if (!current) {
+        const alreadyRestored = to.some(item => inventoryItemMatchesDraftPatch(item, patch.item) && item.qty >= patch.qty);
+        if (alreadyRestored) return true;
+        addItemToCollection(to, { ...clonePlain(patch.item), qty: patch.qty });
+        markLocalStateDirty();
+        await writeChatSave();
+        return true;
+      }
+      const restored = moveInventoryItemBetweenCollections(from, to, current.id, patch.qty);
+      if (!restored.ok) return false;
+      markLocalStateDirty();
+      await writeChatSave();
+      return true;
+    }
+    if (patch.type === 'BUY_ITEMS') {
+      walletCopper.value = Math.max(0, walletCopper.value + patch.totalCopper);
+      for (const bought of patch.items) {
+        let remaining = Math.max(0, Math.floor(Number(bought.qty) || 0));
+        const removeFrom = (collection: InventoryItem[]) => {
+          for (const item of collection) {
+            if (remaining <= 0) break;
+            if (
+              item.name !== bought.name ||
+              item.category !== bought.category ||
+              !sameTagSet(item.tags, bought.tags)
+            ) {
+              continue;
+            }
+            const take = Math.min(item.qty, remaining);
+            item.qty -= take;
+            remaining -= take;
+          }
+        };
+        removeFrom(satchel.value);
+        removeFrom(inventory.value);
+      }
+      satchel.value = satchel.value.filter(item => item.qty > 0);
+      inventory.value = inventory.value.filter(item => item.qty > 0);
+      for (const [productId, stock] of Object.entries(patch.previousStocks)) {
+        const product = generatedShopProducts.value.find(item => item.id === productId);
+        if (product) product.stock = Math.max(0, Math.floor(Number(stock) || 0));
+      }
+      markLocalStateDirty();
+      await writeChatSave();
+      return true;
+    }
     return false;
   }
   async function removeDraftAction(id: string) {
@@ -2568,16 +3091,18 @@ export const useGameStore = defineStore('primordia', () => {
       });
     }
   }
-  function clearDraftActions(options: { undo?: boolean } = { undo: true }) {
+  async function clearDraftActions(options: { undo?: boolean } = { undo: true }) {
     const actions = [...draftActions.value].reverse();
     draftActions.value = [];
-    if (options.undo !== false) void Promise.all(actions.map(action => applyDraftUndoPatch(action.undoPatch)));
+    if (options.undo !== false) {
+      for (const action of actions) {
+        await applyDraftUndoPatch(action.undoPatch);
+      }
+    }
   }
-  function appendPlayerInput(line: string) {
+  function appendPlayerInput(line: string, type?: DraftAction['type'] | StoryActionType) {
     if (!line.trim()) return;
-    playerInput.value = playerInput.value
-      ? `${playerInput.value.replace(/\s+$/, '')}\n${line.trim()}`
-      : line.trim();
+    playerInput.value = mergeMultilineActionText(playerInput.value, line.trim(), type);
   }
   function currentSceneLabel() {
     sanitizeCurrentLocation();
@@ -2685,7 +3210,7 @@ export const useGameStore = defineStore('primordia', () => {
     return [
       '请只负责 AIRP 正文叙事、角色互动、NPC反应、场景气氛和感官描写。',
       settledFact
-        ? `前端已结算: ${settledFact}`
+        ? `前端已结算的硬事实: ${settledFact}\n未被硬事实覆盖的主角状态、临时状态、地点、时间、人物关系、声望或其他自然变化，仍请用隐藏 MVU/变量补丁表达。`
         : '自由行动造成的库存、状态或地点变化，请用隐藏 MVU/变量补丁表达；没有变量补丁就保持不变。',
       '不要在正文里展示 JSON、变量命令、规则分析、提示词或自检过程。',
     ].join('\n');
@@ -2698,41 +3223,381 @@ export const useGameStore = defineStore('primordia', () => {
       guestCap: Math.max(1, Math.floor(guestCap.value || DEFAULT_BUSINESS_GUEST_CAP)),
       visitorChance: Math.max(0, Math.min(100, Math.floor(Number.isFinite(visitorChance.value) ? visitorChance.value : DEFAULT_BUSINESS_VISITOR_CHANCE))),
       lastVisitorSeed: lastVisitorSeed.value.trim(),
+      backgroundGroups: clonePlain(backgroundGroups.value),
+      lastBackgroundFlow: lastBackgroundFlow.value.trim(),
     };
+  }
+
+  function normalizeBackgroundOrders(source: unknown): BackgroundOrder[] {
+    if (!Array.isArray(source)) return [];
+    return source
+      .map(entry => {
+        const record = asRecord(entry);
+        const category = normalizeInventoryCategory(String(record.category || ''));
+        return {
+          itemId: String(record.itemId || '').trim(),
+          name: String(record.name || '').trim(),
+          category,
+          count: Math.max(1, Math.floor(Number(record.count) || 1)),
+          unitPriceCopper: Math.max(0, Math.floor(Number(record.unitPriceCopper) || 0)),
+        };
+      })
+      .filter(order => order.itemId && order.name && ['成品', '酒水'].includes(order.category) && order.unitPriceCopper > 0);
+  }
+
+  function normalizeBackgroundGroups(source: unknown): BackgroundGuestGroup[] {
+    if (!Array.isArray(source)) return [];
+    return source
+      .map((entry, index) => {
+        const record = asRecord(entry);
+        return {
+          id: String(record.id || `bg-${index + 1}`).trim(),
+          groupName: String(record.groupName || record.name || '普通客人').trim(),
+          count: Math.max(1, Math.floor(Number(record.count) || 1)),
+          orders: normalizeBackgroundOrders(record.orders),
+          remainingTurns: Math.max(1, Math.floor(Number(record.remainingTurns) || 1)),
+          hint: String(record.hint || '').trim(),
+        };
+      })
+      .filter(group => group.id && group.groupName && group.count > 0);
   }
 
   function normalizeBusinessState(source: unknown): TavernBusinessState {
     const record = asRecord(source);
     const rawVisitorChance = Number(record.visitorChance);
+    const normalizedBackgroundGroups = normalizeBackgroundGroups(record.backgroundGroups);
+    const backgroundGuestCount = normalizedBackgroundGroups.reduce((sum, group) => sum + Math.max(0, Math.floor(group.count || 0)), 0);
     return {
       isOpen: Boolean(record.isOpen),
-      currentGuests: Math.max(0, Math.floor(Number(record.currentGuests) || 0)),
       guestCap: Math.max(1, Math.floor(Number(record.guestCap) || DEFAULT_BUSINESS_GUEST_CAP)),
+      currentGuests: normalizedBackgroundGroups.length ? backgroundGuestCount : 0,
       visitorChance: Math.max(0, Math.min(100, Math.floor(Number.isFinite(rawVisitorChance) ? rawVisitorChance : DEFAULT_BUSINESS_VISITOR_CHANCE))),
       lastVisitorSeed: String(record.lastVisitorSeed || '').trim(),
+      backgroundGroups: normalizedBackgroundGroups,
+      lastBackgroundFlow: String(record.lastBackgroundFlow || '').trim(),
     };
+  }
+
+  function regularGuestBookWorldbookName() {
+    return openingSave.value?.worldbookName || defaultOpeningWorldbookName() || '';
+  }
+
+  async function syncRegularGuestBookWorldbook() {
+    try {
+      const binding =
+        regularGuestBookWorldbookBinding.value ??
+        (await ensureRegularGuestBookWorldbookEntry(regularGuestBookWorldbookName(), regularGuests.value));
+      regularGuestBookWorldbookBinding.value = {
+        worldbookName: binding.worldbookName,
+        uid: binding.uid,
+        entryName: binding.entryName,
+      };
+      await saveRegularGuestBookToWorldbook(regularGuestBookWorldbookBinding.value, regularGuests.value);
+      regularGuestBookWorldbookStatus.value = `常客簿副本已同步：${binding.entryName}`;
+      return true;
+    } catch (error) {
+      regularGuestBookWorldbookStatus.value = error instanceof Error ? error.message : '常客簿副本同步失败。';
+      return false;
+    }
+  }
+
+  function upsertRegularGuestListItem(list: RegularGuestUnit[], item: RegularGuestUnit) {
+    const index = list.findIndex(existing => existing.id === item.id || (existing.name === item.name && existing.type === item.type));
+    const next = { ...item, updatedAt: Date.now() };
+    if (index >= 0) list[index] = { ...list[index], ...next, createdAtTurn: list[index].createdAtTurn || next.createdAtTurn };
+    else list.push(next);
+  }
+
+  function regularGuestFromParsedUpdate(update: ParsedRegularGuestUpdate, turn = successfulNarrationTurn.value): RegularGuestUnit {
+    return createRegularGuestFromFields(
+      {
+        id: update.id,
+        name: update.name,
+        type: update.type as RegularGuestType,
+        sizeText: update.sizeText,
+        identity: update.identity,
+        relationship: update.relationship,
+        memoryHook: update.memoryHook,
+        likes: update.likes,
+        dislikes: update.dislikes,
+        habits: update.habits,
+        messageTendency: update.messageTendency,
+        notes: update.notes,
+      },
+      turn,
+    );
+  }
+
+  function addPendingRegularGuestUpdates(updates: ParsedRegularGuestUpdate[] | undefined, turn = successfulNarrationTurn.value) {
+    if (!updates?.length) return 0;
+    let changed = 0;
+    for (const update of updates) {
+      const item = regularGuestFromParsedUpdate(update, turn);
+      if (update.action === 'remove') {
+        pendingRegularGuestUpdates.value = pendingRegularGuestUpdates.value.filter(existing => existing.id !== item.id && existing.name !== item.name);
+        changed += 1;
+        continue;
+      }
+      upsertRegularGuestListItem(pendingRegularGuestUpdates.value, item);
+      changed += 1;
+    }
+    if (changed) {
+      markLocalStateDirty();
+      pushLog('提示', `收到 ${changed} 条常客候选，已放入常客簿待确认区。`, {
+        source: 'ai',
+        authoritative: false,
+        tone: 'violet',
+        actionType: 'REGULAR_GUEST_PENDING',
+      });
+    }
+    return changed;
+  }
+
+  async function confirmRegularGuest(id: string) {
+    const item = pendingRegularGuestUpdates.value.find(entry => entry.id === id) ?? regularGuests.value.find(entry => entry.id === id);
+    if (!item) return false;
+    upsertRegularGuestListItem(regularGuests.value, item);
+    pendingRegularGuestUpdates.value = pendingRegularGuestUpdates.value.filter(entry => entry.id !== id);
+    markLocalStateDirty();
+    await syncRegularGuestBookWorldbook();
+    await writeChatSave();
+    return true;
+  }
+
+  async function saveRegularGuest(item: RegularGuestUnit, options: { confirm?: boolean } = {}) {
+    const normalized = createRegularGuestFromFields(item, item.createdAtTurn || successfulNarrationTurn.value);
+    if (!normalized.name) return false;
+    if (options.confirm) {
+      pendingRegularGuestUpdates.value = pendingRegularGuestUpdates.value.filter(entry => entry.id !== normalized.id);
+      upsertRegularGuestListItem(regularGuests.value, normalized);
+      await syncRegularGuestBookWorldbook();
+    } else if (regularGuests.value.some(entry => entry.id === normalized.id)) {
+      upsertRegularGuestListItem(regularGuests.value, normalized);
+      await syncRegularGuestBookWorldbook();
+    } else {
+      upsertRegularGuestListItem(pendingRegularGuestUpdates.value, normalized);
+    }
+    markLocalStateDirty();
+    await writeChatSave();
+    return true;
+  }
+
+  async function discardPendingRegularGuest(id: string) {
+    const before = pendingRegularGuestUpdates.value.length;
+    pendingRegularGuestUpdates.value = pendingRegularGuestUpdates.value.filter(entry => entry.id !== id);
+    if (pendingRegularGuestUpdates.value.length === before) return false;
+    markLocalStateDirty();
+    await writeChatSave();
+    return true;
+  }
+
+  async function removeRegularGuest(id: string) {
+    const before = regularGuests.value.length;
+    regularGuests.value = regularGuests.value.filter(entry => entry.id !== id);
+    if (regularGuests.value.length === before) return false;
+    markLocalStateDirty();
+    await syncRegularGuestBookWorldbook();
+    await writeChatSave();
+    return true;
+  }
+
+  function pickRegularGuestForRevisit() {
+    const list = regularGuests.value.filter(guest => guest.name.trim());
+    if (!list.length) return null;
+    if (Math.random() >= REGULAR_GUEST_REVISIT_CHANCE / 100) return null;
+    return list[Math.floor(Math.random() * list.length)] ?? null;
+  }
+
+  function formatRegularGuestRevisitPrompt(guest: RegularGuestUnit) {
+    return [
+      '【本次互动访客：常客回访】',
+      '',
+      '来访者：',
+      `- 名称：${guest.name}`,
+      `- 类型：${guest.type}`,
+      `- 人数描述：${guest.sizeText}`,
+      `- 身份：${guest.identity}`,
+      `- 关系：${guest.relationship}`,
+      `- 记忆钩子：${guest.memoryHook}`,
+      `- 偏好：${guest.likes}`,
+      `- 忌口：${guest.dislikes}`,
+      `- 习惯：${guest.habits}`,
+      `- 消息倾向：${guest.messageTendency}`,
+    ].join('\n');
   }
 
   function prepareBusinessVisitorPlan(): TavernBusinessVisitorPlan | null {
     if (!isBusinessOpen.value) return null;
-    const cap = Math.max(1, Math.floor(guestCap.value || DEFAULT_BUSINESS_GUEST_CAP));
-    const guests = Math.max(0, Math.floor(currentGuests.value || 0));
-    if (guests >= cap) return { seed: null, nextGuests: guests, shouldInject: false, reason: 'full' };
     const chance = Math.max(0, Math.min(100, Math.floor(Number.isFinite(visitorChance.value) ? visitorChance.value : DEFAULT_BUSINESS_VISITOR_CHANCE))) / 100;
     if (Math.random() >= chance) {
-      return { seed: null, nextGuests: Math.max(0, guests - 1), shouldInject: false, reason: 'miss' };
+      return { seed: null, regularGuest: null, shouldInject: false, reason: 'miss' };
+    }
+    const regularGuest = pickRegularGuestForRevisit();
+    if (regularGuest) {
+      return {
+        seed: null,
+        regularGuest,
+        shouldInject: true,
+        reason: 'regular',
+      };
     }
     const seed = rollVisitorSeed();
     return {
       seed,
-      nextGuests: Math.min(cap, guests + seed.count),
+      regularGuest: null,
       shouldInject: true,
       reason: 'hit',
     };
   }
 
+  function mainHallRegion() {
+    return regions.value.find(region => region.id === 'main-hall') ?? regions.value.find(region => /主厅|大厅|前厅|接待/.test(region.name));
+  }
+
+  function isTavernSceneForBackgroundFlow() {
+    return currentSceneType.value === '酒馆' || /酒馆|主厅|大厅|前厅|柜台|厨房/.test(currentSceneLabel());
+  }
+
+  function saleableBackgroundItems() {
+    return inventory.value.filter(
+      item =>
+        ['成品', '酒水'].includes(item.category) &&
+        Math.max(0, Math.floor(Number(item.qty) || 0)) > 0 &&
+        Math.max(0, Math.floor(Number(item.priceCopper) || 0)) > 0 &&
+        !isPendingCraftItem(item),
+    );
+  }
+
+  function pickBackgroundTemplate() {
+    return BACKGROUND_CUSTOMER_TEMPLATES[Math.floor(Math.random() * BACKGROUND_CUSTOMER_TEMPLATES.length)] ?? BACKGROUND_CUSTOMER_TEMPLATES[0];
+  }
+
+  function backgroundItemPreferenceScore(item: InventoryItem, prefers: string[]) {
+    const text = `${item.name} ${(item.tags || []).join(' ')} ${item.desc || ''}`;
+    return prefers.reduce((score, keyword) => score + (keyword && text.includes(keyword) ? 1 : 0), 0);
+  }
+
+  function pickWeightedSaleItem(items: InventoryItem[], prefers: string[]) {
+    const weighted = items.map(item => ({
+      item,
+      weight: 1 + backgroundItemPreferenceScore(item, prefers) * 3 + (item.category === '酒水' ? 1 : 0),
+    }));
+    const total = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+    let roll = Math.random() * Math.max(1, total);
+    for (const entry of weighted) {
+      roll -= entry.weight;
+      if (roll <= 0) return entry.item;
+    }
+    return weighted[0]?.item;
+  }
+
+  function buildBackgroundOrders(count: number, template: (typeof BACKGROUND_CUSTOMER_TEMPLATES)[number]) {
+    const remaining = new Map(saleableBackgroundItems().map(item => [item.id, Math.max(0, Math.floor(Number(item.qty) || 0))]));
+    const orderMap = new Map<string, BackgroundOrder>();
+    const itemById = new Map(saleableBackgroundItems().map(item => [item.id, item]));
+    for (let guestIndex = 0; guestIndex < count; guestIndex += 1) {
+      const perGuestItems = Math.random() < 0.35 ? 2 : 1;
+      for (let itemIndex = 0; itemIndex < perGuestItems; itemIndex += 1) {
+        const available = [...itemById.values()].filter(item => (remaining.get(item.id) ?? 0) > 0);
+        if (!available.length) break;
+        const picked = pickWeightedSaleItem(available, template.prefers);
+        if (!picked) break;
+        remaining.set(picked.id, Math.max(0, (remaining.get(picked.id) ?? 0) - 1));
+        const existed = orderMap.get(picked.id);
+        if (existed) existed.count += 1;
+        else {
+          orderMap.set(picked.id, {
+            itemId: picked.id,
+            name: picked.name,
+            category: picked.category,
+            count: 1,
+            unitPriceCopper: salePriceForItem(picked),
+          });
+        }
+      }
+    }
+    return [...orderMap.values()];
+  }
+
+  function formatBackgroundOrders(orders: BackgroundOrder[]) {
+    return orders.map(order => `${order.name}${order.count > 1 ? `×${order.count}` : ''}`).join('、');
+  }
+
+  function nextBackgroundGroupId() {
+    return `bg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function prepareBackgroundFlowPlan(): BackgroundFlowPlan | null {
+    if (!isBusinessOpen.value) return null;
+    const current = normalizeBackgroundGroups(backgroundGroups.value);
+    const leavingGroups: BackgroundGuestGroup[] = [];
+    const stayingGroups = current
+      .map(group => ({ ...group, remainingTurns: Math.max(0, group.remainingTurns - 1) }))
+      .filter(group => {
+        if (group.remainingTurns <= 0) {
+          leavingGroups.push(group);
+          return false;
+        }
+        return true;
+      });
+    const cap = Math.max(1, Math.floor(guestCap.value || DEFAULT_BUSINESS_GUEST_CAP));
+    const occupied = stayingGroups.reduce((sum, group) => sum + Math.max(0, Math.floor(group.count || 0)), 0);
+    const basePlan = (reason: BackgroundFlowPlan['reason'], enteringGroup: BackgroundGuestGroup | null, text: string, shouldInject = Boolean(text)): BackgroundFlowPlan => {
+      const nextGroups = enteringGroup ? [...stayingGroups, enteringGroup] : stayingGroups;
+      return {
+        leavingGroups,
+        enteringGroup,
+        incomeCopper: enteringGroup?.orders.reduce((sum, order) => sum + order.count * order.unitPriceCopper, 0) ?? 0,
+        inventoryDeltas: enteringGroup?.orders.map(order => ({ itemId: order.itemId, name: order.name, category: order.category, delta: -order.count })) ?? [],
+        nextGroups,
+        nextCurrentGuests: nextGroups.reduce((sum, group) => sum + Math.max(0, Math.floor(group.count || 0)), 0),
+        text,
+        shouldInject,
+        reason,
+      };
+    };
+
+    const leavingText = leavingGroups.length
+      ? `${leavingGroups.map(group => `${group.count}名${group.groupName}`).join('、')}吃完离开，空出座位。`
+      : '';
+    if (!isTavernSceneForBackgroundFlow()) return basePlan('not_tavern', null, leavingText, Boolean(leavingText));
+
+    const hall = mainHallRegion();
+    const condition = hall?.condition ?? '良好';
+    const chance = BACKGROUND_FLOW_CLEANLINESS_CHANCE[condition] ?? 0;
+    if (chance <= 0) return basePlan('inactive_hall', null, leavingText, Boolean(leavingText));
+    if (Math.random() >= chance) return basePlan('miss', null, leavingText, Boolean(leavingText));
+
+    const freeSeats = Math.max(0, cap - occupied);
+    if (freeSeats <= 0) return basePlan('full', null, leavingText || '大厅暂时坐满，门口有人看了一眼便没有进来。', true);
+    if (!saleableBackgroundItems().length) return basePlan('no_stock', null, leavingText || '有人在门口看了看，发现柜台没有可售的成品或酒水，很快又离开了。', true);
+
+    const template = pickBackgroundTemplate();
+    const count = Math.max(1, Math.min(freeSeats, Math.floor(Math.random() * 4) + 1));
+    const totalSaleableQty = saleableBackgroundItems().reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item.qty) || 0)), 0);
+    if (totalSaleableQty < count) {
+      return basePlan('soldout', null, leavingText || `${count}名${template.name}进门看了看，发现可售的成品或酒水不够，很快离开了。`, true);
+    }
+    const orders = buildBackgroundOrders(count, template);
+    const orderedCount = orders.reduce((sum, order) => sum + order.count, 0);
+    if (!orders.length || orderedCount < count) return basePlan('soldout', null, leavingText || `${count}名${template.name}进门看了看，没有点到想要的东西，很快离开了。`, true);
+
+    const enteringGroup: BackgroundGuestGroup = {
+      id: nextBackgroundGroupId(),
+      groupName: template.name,
+      count,
+      orders,
+      remainingTurns: Math.floor(Math.random() * 3) + 1,
+      hint: template.hint,
+    };
+    const enteringText = `${count}名${template.name}进来，点了${formatBackgroundOrders(orders)}，${template.hint}。`;
+    return basePlan('flow', enteringGroup, [leavingText, enteringText].filter(Boolean).join(' '), true);
+  }
+
   function formatBusinessVisitorPlan(plan: TavernBusinessVisitorPlan | null) {
-    if (!plan?.shouldInject || !plan.seed) return '';
+    if (!plan?.shouldInject) return '';
+    if (plan.regularGuest) return formatRegularGuestRevisitPrompt(plan.regularGuest);
+    if (!plan.seed) return '';
     return [
       `酒馆门口新来的动静：${plan.seed.text}`,
       '如果这批客人实际进店、点单或留下需求，请在正文后追加 <guest_update> JSON 数组，供前端服务托盘记录。',
@@ -2741,7 +3606,15 @@ export const useGameStore = defineStore('primordia', () => {
 
   function commitBusinessVisitorPlan(plan: TavernBusinessVisitorPlan | null) {
     if (!plan || !isBusinessOpen.value) return false;
-    currentGuests.value = Math.max(0, Math.min(Math.max(1, guestCap.value), plan.nextGuests));
+    if (plan.regularGuest) {
+      lastVisitorSeed.value = `常客回访 · ${plan.regularGuest.name}`;
+      pushLog('叙事', `常客回访 · ${plan.regularGuest.name}`, {
+        source: 'engine',
+        authoritative: true,
+        tone: 'cyan',
+        actionType: 'REGULAR_GUEST_REVISIT',
+      });
+    }
     if (plan.seed) {
       lastVisitorSeed.value = plan.seed.text;
       pushLog('叙事', `营业访客 · ${plan.seed.text}`, {
@@ -2755,11 +3628,77 @@ export const useGameStore = defineStore('primordia', () => {
     return true;
   }
 
+  function formatBackgroundFlowPlan(plan: BackgroundFlowPlan | null) {
+    if (!plan?.shouldInject || !plan.text.trim()) return '';
+    const inventoryPatchExamples = plan.inventoryDeltas.map(delta =>
+      `  { "op": "delta", "path": "/库房/${delta.category}/${delta.name}/数量", "value": ${delta.delta} }`,
+    );
+    const moneyPatchExamples = plan.incomeCopper > 0
+      ? [
+          `  { "op": "delta", "path": "/酒馆/资金/钱匣/折算合计铜币", "value": ${plan.incomeCopper} }`,
+          `  { "op": "delta", "path": "/酒馆/资金/折算合计铜币", "value": ${plan.incomeCopper} }`,
+        ]
+      : [];
+    const requiredPatchExamples = [...inventoryPatchExamples, ...moneyPatchExamples];
+    const settlementRequests = [
+      plan.inventoryDeltas.length
+        ? `【必须写变量补丁】普通客流已经卖出的库存必须扣减: ${plan.inventoryDeltas
+            .map(delta => `库房.${delta.category}.${delta.name}.数量 ${delta.delta}`)
+            .join('、')}。`
+        : '',
+      plan.incomeCopper > 0
+        ? `【必须写变量补丁】普通客流收入必须进入钱匣: 酒馆.资金.钱匣.折算合计铜币 +${plan.incomeCopper}，酒馆.资金.折算合计铜币 +${plan.incomeCopper}。能换算五币种时，同步 replace 钱匣五币种和酒馆.资金顶层五币种；不会换算也不能漏掉折算合计铜币 delta。`
+        : '',
+      plan.enteringGroup ? '如这批普通客流经营顺利，可按规则小幅增加 酒馆.声望.数值，并同步声望结构。' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const patchTemplate = requiredPatchExamples.length
+      ? [
+          '必须在正文后追加隐藏变量块，至少包含以下 JSONPatch 项，不要只在正文里说“赚了钱”:',
+          '<UpdateVariable>',
+          '<JSONPatch>',
+          '[',
+          requiredPatchExamples.join(',\n'),
+          ']',
+          '</JSONPatch>',
+          '</UpdateVariable>',
+        ].join('\n')
+      : '';
+    return [
+      `普通营业客流：${plan.text}`,
+      settlementRequests,
+      patchTemplate,
+      '【背景处理规则】这只是酒馆普通经营背景。正文里请自然带过，不要让这些普通客人抢走当前互动；不要为他们输出 <guest_update>；不要额外重新估算库存、人数或收入；必须只按上面的待结算项写变量补丁。',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function commitBackgroundFlowPlan(plan: BackgroundFlowPlan | null) {
+    if (!plan || !isBusinessOpen.value) return false;
+    backgroundGroups.value = normalizeBackgroundGroups(plan.nextGroups);
+    currentGuests.value = Math.max(0, Math.min(Math.max(1, guestCap.value), plan.nextCurrentGuests));
+    if (plan.text.trim()) {
+      lastBackgroundFlow.value = plan.text.trim();
+      pushLog('结算', `普通客流 · ${plan.text.trim()}${plan.incomeCopper > 0 ? ` · 待变量结算 ${formatCopper(plan.incomeCopper)} · 声望${reputationSaleText()}` : ''}`, {
+        source: 'engine',
+        authoritative: true,
+        tone: 'green',
+        actionType: 'BACKGROUND_FLOW',
+      });
+    }
+    markLocalStateDirty();
+    return true;
+  }
+
   function setBusinessOpen(open: boolean) {
     isBusinessOpen.value = open;
     if (!open) {
       currentGuests.value = 0;
       lastVisitorSeed.value = '';
+      backgroundGroups.value = [];
+      lastBackgroundFlow.value = '';
     }
     markLocalStateDirty();
     void writeChatSave();
@@ -2773,7 +3712,20 @@ export const useGameStore = defineStore('primordia', () => {
 
   function setBusinessGuestCap(value: number) {
     guestCap.value = Math.max(1, Math.floor(Number(value) || DEFAULT_BUSINESS_GUEST_CAP));
-    currentGuests.value = Math.min(currentGuests.value, guestCap.value);
+    let seats = guestCap.value;
+    const trimmed: BackgroundGuestGroup[] = [];
+    for (const group of normalizeBackgroundGroups(backgroundGroups.value)) {
+      if (seats <= 0) break;
+      if (group.count <= seats) {
+        trimmed.push(group);
+        seats -= group.count;
+      }
+    }
+    backgroundGroups.value = trimmed;
+    currentGuests.value = Math.min(
+      trimmed.reduce((sum, group) => sum + group.count, 0),
+      guestCap.value,
+    );
     markLocalStateDirty();
     void writeChatSave();
   }
@@ -2936,7 +3888,7 @@ export const useGameStore = defineStore('primordia', () => {
         : '';
     const relationLine = relationshipStateSummary();
     return [
-      '完整正式变量树已附加在本层消息 data/stat_data；库存、货架、农田、人物与酒馆结构以 stat_data 为准。',
+      '完整正式变量树已附加在本层消息 data/stat_data；库存、农田、人物与酒馆结构以 stat_data 为准。商铺货架只读取本层 <shop> 临时块，不写入长期变量。',
       `当前日期时间: ${calendar.year}年 ${currentMonthName()}（${seasonText.value}）第${calendar.day}日 · ${weekDayName.value}${isMarketDay.value ? '（集市日）' : ''} · ${currentTimeOfDay.value} · ${clockText.value}。`,
       isMarketDay.value
         ? '今日是市日：街坊、集市、摊位、临时货车与外来小贩更活跃；若本回合涉及采购或找店，商品来源与类型可以比平日更丰富。'
@@ -2985,7 +3937,7 @@ export const useGameStore = defineStore('primordia', () => {
       activeShopProductCount: activeShop ? generatedShopProducts.value.length : 0,
       lastActionSummary: lastActionSummary.trim(),
       finalRule:
-        '前端结算快照为本回合界面状态准绳。地点只按 MVU 地点变量变化；自由行动里的库存、行囊、临时状态和资金增减可由 MVU/变量补丁同步；前端已硬结算的随身钱袋、钱匣、货架、农田酒窖、设施和人物状态不得被正文反改。',
+        '前端结算快照只描述本回合临时界面状态。地点只按 MVU 地点变量变化；自由行动里的库存、行囊、临时状态和资金增减可由 MVU/变量补丁同步；商铺货架只由 <shop> 临时块显示，不写入长期变量。',
     };
   }
 
@@ -3030,6 +3982,11 @@ export const useGameStore = defineStore('primordia', () => {
         '完整格式示例：<character_behavior_update>[{"action":"learn","character":"橘柒","region":"主厅接待区","behaviors":["擦桌","摆椅","收杯"]}]</character_behavior_update>',
         'action 只允许 learn/remove/update；character 写角色正式姓名；优先使用 behaviors 数组，每个行为控制在 2-8 个字。',
       ].join('\n'),
+      [
+        '如果本回合出现值得以后再来的客人或团体，可以在正文后输出 <regular_guest_update>...</regular_guest_update> 严格 JSON 数组。',
+        '这个块只提出常客簿候选，前端会放入待确认区，不会自动入簿；普通路人、一次性背景客流不要输出。',
+        '字段使用 action、名称、类型、人数描述、身份、关系、记忆钩子、偏好、忌口、习惯、消息倾向、备注；类型只写“个人”或“团体”。',
+      ].join('\n'),
       needsShop ? '本回合要求生成商铺时，必须在 <maintext> 后输出 <shop>...</shop>。' : '',
       needsCraft ? '本回合要求生成制作结果时，必须在 <maintext> 后输出 <craft_result>...</craft_result>。' : '',
       needsGuestUpdate ? '本回合若新增客人、点单、上菜反馈或客人离开，请在正文后输出 <guest_update>...</guest_update> JSON 数组，供前端服务托盘读取。' : '',
@@ -3040,6 +3997,20 @@ export const useGameStore = defineStore('primordia', () => {
       .join('\n');
   }
 
+  function summarizeNarrativeTaskHint(aiHint?: string) {
+    const hint = aiHint?.trim() ?? '';
+    if (!hint) return '';
+    if (/<craft_result>/i.test(hint)) {
+      return hint
+        .split(/输出顺序必须是/i)[0]
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .join('\n');
+    }
+    return hint;
+  }
+
   function buildNarrationPrompt(options: {
     userText: string;
     settledFact?: string;
@@ -3048,10 +4019,16 @@ export const useGameStore = defineStore('primordia', () => {
     timeChange?: ActionResult['timeChange'];
     aiHint?: string;
     npcActivityPlan?: TavernNpcActivityPlan | null;
+    backgroundFlowPlan?: BackgroundFlowPlan | null;
     businessVisitorPlan?: TavernBusinessVisitorPlan | null;
   }) {
     const rawUserText = options.userText.trim();
-    const structuredText = /<user>[\s\S]*?<\/user>|【前端权威事实】/.test(rawUserText) ? rawUserText : `<user>${rawUserText}</user>`;
+    const userSceneLine = `当前地点: ${currentSceneLabel()}`;
+    const structuredText = /<user>[\s\S]*?<\/user>/.test(rawUserText)
+      ? rawUserText.replace(/<user\b([^>]*)>/i, match => `${match}\n${userSceneLine}\n`)
+      : /【前端权威事实】/.test(rawUserText)
+        ? rawUserText
+        : `<user>${userSceneLine}\n${rawUserText}</user>`;
     const hasFrontendSettlement = /前端已结算/.test(rawUserText);
     const timeLine = options.settledFact && options.timeChange
       ? `时间变化: ${options.timeChange.from} -> ${options.timeChange.to}（推进${options.timeChange.minutes}分钟）`
@@ -3065,8 +4042,6 @@ export const useGameStore = defineStore('primordia', () => {
       '【叙述者权限边界】',
       aiAuthorityBoundary(options.settledFact),
       '',
-      buildRecentStoryContinuitySummary(),
-      '',
       '【当前权威局势】',
       buildAuthoritativeSituationSummary(),
       timeLine,
@@ -3077,6 +4052,7 @@ export const useGameStore = defineStore('primordia', () => {
         formatServiceTrayPromptBlock(),
         formatCharacterBehaviorMemoryBlock(),
         formatTavernNpcActivityPlan(options.npcActivityPlan ?? null),
+        formatBackgroundFlowPlan(options.backgroundFlowPlan ?? null),
         formatBusinessVisitorPlan(options.businessVisitorPlan ?? null),
       ]
         .filter(Boolean)
@@ -3089,10 +4065,12 @@ export const useGameStore = defineStore('primordia', () => {
       '',
       '【本回合叙述任务】',
       [
-        '承接上一楼层正文末尾，写出本回合行动造成的连续剧情。',
+        '承接当前权威局势，写出本回合行动造成的连续剧情。',
         '不要重启场景；地点变化只通过 MVU 地点补丁表达。',
-        hasFrontendSettlement ? '标注“前端已结算”的内容已经由前端扣减或改状态，不要再为这些内容输出库存、农田或酒窖变量补丁。' : '',
-        options.aiHint?.trim() ? options.aiHint.trim() : '',
+        hasFrontendSettlement
+          ? '标注“前端已结算”的硬结算内容不要重复估算；但如果本回合自然产生主角状态、临时状态、地点、时间、人物关系、声望或其他未结算变化，仍应通过隐藏 <UpdateVariable>/<JSONPatch> 更新。'
+          : '',
+        summarizeNarrativeTaskHint(options.aiHint),
       ]
         .filter(Boolean)
         .join('\n'),
@@ -3103,30 +4081,6 @@ export const useGameStore = defineStore('primordia', () => {
 
   function promptAcceptsGeneratedShop(prompt: string) {
     return /动作类型:\s*(FIND_SHOP|VISIT_SHOP)|本回合要求生成商铺|请额外输出一个\s*<shop>|<shop>|货架给9到10项|店名:\s*商铺名|自由找店|寻找商铺/.test(prompt);
-  }
-
-  function sanitizeContinuityText(text: string) {
-    return text
-      .replace(new RegExp('<StatusPlaceHolderImpl\\s*/?>', 'gi'), '')
-      .replace(/<StatusPlaceHolder\b[^>]*\/?>/gi, '')
-      .replace(/StatusPlaceHolderImpl/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function buildRecentStoryContinuitySummary() {
-    const latest = storyContinuityOverride.value ?? loadedStoryCheckpoint.value ?? loadLatestAssistantMaintext();
-    const summary = sanitizeContinuityText(latest.sum ?? '');
-    const maintext = sanitizeContinuityText(latest.maintext ?? '');
-    const tail = maintext.slice(-320);
-    if (!summary && !tail) return '';
-    return [
-      '上一楼层承接:',
-      summary ? `上一楼层摘要: ${summary}` : '',
-      tail ? `上一楼层正文末尾: ${tail}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
   }
 
   function wrapUserAction(action: string, target?: string) {
@@ -3580,8 +4534,10 @@ export const useGameStore = defineStore('primordia', () => {
     return [
       '【本回合触发的约定】',
       ...memos.map(memo => {
-        const people = memo.people.length ? `相关人物: ${memo.people.join('、')}。` : '';
-        return `- ${memo.name}: ${memo.reminder}${people ? ` ${people}` : ''}`;
+        const event = memo.event.trim() || memo.reminder.trim();
+        const reminder = memo.reminder.trim() || memo.event.trim();
+        const people = memo.people.length ? `\n  相关人物：${memo.people.join('、')}` : '';
+        return `- ${memo.name}\n  事件：${event}\n  本回合提醒：${reminder}${people}`;
       }),
       '这些是前端保存的未来事件提醒；请自然承接，不要把本段标题或说明文字写进正文。',
     ].join('\n');
@@ -3725,12 +4681,46 @@ export const useGameStore = defineStore('primordia', () => {
     return `${item.name}|${item.category}|${[...new Set(item.tags)].sort().join(',')}`;
   }
 
-  function recipeSignature(input: Pick<RecipeEntry, 'mode' | 'technique' | 'outputName' | 'outputCategory' | 'ingredients'>) {
+  function recipeSignature(input: Pick<RecipeEntry, 'mode' | 'outputName' | 'outputCategory' | 'ingredients'>) {
     const ingredients = input.ingredients
       .map(item => `${recipeIngredientKey(item)}x${item.qty}`)
       .sort()
       .join(';');
-    return `${input.mode}|${input.technique}|${input.outputName}|${input.outputCategory}|${ingredients}`;
+    return `${input.mode}|${input.outputName}|${input.outputCategory}|${ingredients}`;
+  }
+
+  function safeRecipeSignature(input: unknown) {
+    const record = asRecord(input);
+    const ingredients = Array.isArray(record.ingredients) ? record.ingredients : [];
+    if (!record.mode || !record.outputName || !record.outputCategory || !ingredients.length) return '';
+    return recipeSignature(record as Pick<RecipeEntry, 'mode' | 'outputName' | 'outputCategory' | 'ingredients'>);
+  }
+
+  function normalizeRecipeEntries(source: unknown) {
+    if (!Array.isArray(source)) return [] as RecipeEntry[];
+    return clonePlain(source).filter((recipe): recipe is RecipeEntry => Boolean(safeRecipeSignature(recipe)));
+  }
+
+  function mergeRecipeEntries(...sources: unknown[]) {
+    const merged = new Map<string, RecipeEntry>();
+    for (const source of sources) {
+      for (const recipe of normalizeRecipeEntries(source)) {
+        const signature = safeRecipeSignature(recipe);
+        if (!signature) continue;
+        const existing = merged.get(signature);
+        if (!existing || Math.floor(Number(recipe.updatedAt) || 0) >= Math.floor(Number(existing.updatedAt) || 0)) {
+          merged.set(signature, recipe);
+        }
+      }
+    }
+    return [...merged.values()].sort(
+      (a, b) => Math.floor(Number(b.updatedAt || b.createdAt) || 0) - Math.floor(Number(a.updatedAt || a.createdAt) || 0),
+    );
+  }
+
+  function collectRecipeEntriesFromFloorSnapshots(floorSnapshots: unknown) {
+    const root = floorSnapshots && typeof floorSnapshots === 'object' ? floorSnapshots as Record<string, unknown> : {};
+    return Object.values(root).flatMap(snapshot => normalizeRecipeEntries(asRecord(snapshot).recipes));
   }
 
   function findInventoryForRecipeIngredient(ingredient: RecipeIngredient) {
@@ -3840,7 +4830,6 @@ export const useGameStore = defineStore('primordia', () => {
   function addPendingCraftItem(
     craftId: string,
     mode: Extract<GameAction, { type: 'COOK_DISH' }>['mode'],
-    technique: string,
     summary: string,
     ingredients: RecipeIngredient[],
   ) {
@@ -3848,7 +4837,6 @@ export const useGameStore = defineStore('primordia', () => {
       mode === 'drink' ? '待命名饮品' : mode === 'sauce' ? '待命名酱料' : '待命名菜品';
     const recipeSource: RecipeSource = {
       mode,
-      technique,
       ingredients: clonePlain(ingredients),
     };
     pendingCraftSources.value.unshift({ craftId, source: clonePlain(recipeSource), createdAt: Date.now() });
@@ -3858,7 +4846,7 @@ export const useGameStore = defineStore('primordia', () => {
       name: pendingName,
       category: craftResultCategory(mode),
       qty: 1,
-      tags: ['待判定', technique],
+      tags: ['待判定'],
       quality: '无冲突',
       desc: `前端已扣除材料，等待 AI 按生成引擎命名与判定。原料：${summary}`,
       priceCopper: 0,
@@ -3909,7 +4897,7 @@ export const useGameStore = defineStore('primordia', () => {
 
     clearPendingCraftItems();
     removeInventoryItems(checked.items);
-    addPendingCraftItem(craftId, action.mode, action.technique, summary, recipeIngredients);
+    addPendingCraftItem(craftId, action.mode, summary, recipeIngredients);
     if (protagonist.cookingLevel < 8) {
       protagonist.cookingExp += 1;
       if (protagonist.cookingExp >= protagonist.cookingExpMax) {
@@ -3922,7 +4910,7 @@ export const useGameStore = defineStore('primordia', () => {
     void writeChatSave();
 
     const modeLabel = craftModeLabel(action.mode);
-    pushLog('结算', `${modeLabel}材料已扣除 · ${action.technique} · ${summary}`);
+    pushLog('结算', `${modeLabel}材料已扣除 · ${summary}`);
     return {
       ok: true,
       tone: 'green',
@@ -3930,9 +4918,9 @@ export const useGameStore = defineStore('primordia', () => {
       shouldAskAI: true,
       summary,
       craftId,
-      narrativeFact: `当前地点为「${currentSceneLabel()}」。玩家用「${action.technique}」${modeLabel}: ${summary}。前端已完成硬规则结算: 对应材料已经从库房扣除，并生成编号为「${craftId}」的待命名成品占位。`,
+      narrativeFact: `当前地点为「${currentSceneLabel()}」。玩家用这些材料${modeLabel}: ${summary}。前端已完成硬规则结算: 对应材料已经从库房扣除，并生成编号为「${craftId}」的待命名成品占位。`,
       aiHint: [
-        `请根据玩家使用的做法与材料，按对应生成引擎叙述${modeLabel}过程。`,
+        `请根据玩家选择的材料，按对应生成引擎叙述${modeLabel}过程。`,
         '请不要重新扣材料，不要改变随身钱袋或钱匣。',
         '输出顺序必须是: <maintext>制作过程叙述</maintext>，然后再输出下面的隐藏数据块，供前端把占位成品改成正式结果:',
         '<craft_result>',
@@ -3963,6 +4951,10 @@ export const useGameStore = defineStore('primordia', () => {
     const targetGuest = findGuestGroup(action.guestId);
     const total = checked.items.reduce((sum, item) => {
       const stored = inventory.value.find(entry => entry.id === item.id);
+      return sum + salePriceForItem(stored ?? item) * item.qty;
+    }, 0);
+    const baseTotal = checked.items.reduce((sum, item) => {
+      const stored = inventory.value.find(entry => entry.id === item.id);
       return sum + Math.max(0, stored?.priceCopper ?? item.priceCopper ?? 0) * item.qty;
     }, 0);
     const summary = checked.items.map(item => `${item.name}×${item.qty}`).join('、');
@@ -3980,7 +4972,7 @@ export const useGameStore = defineStore('primordia', () => {
     }
     markLocalStateDirty();
     void writeChatSave();
-    pushLog('结算', `上菜完成${guestLabel ? ` · ${guestLabel}` : ''} · ${summary} · 收入 ${formatCopper(total)}，已入钱匣`);
+    pushLog('结算', `上菜完成${guestLabel ? ` · ${guestLabel}` : ''} · ${summary} · 收入 ${formatCopper(total)}，已入钱匣 · 声望${reputationSaleText()}`);
 
     return {
       ok: true,
@@ -3989,7 +4981,7 @@ export const useGameStore = defineStore('primordia', () => {
       shouldAskAI: true,
       paidCopper: total,
       summary,
-      narrativeFact: `当前地点为「${currentSceneLabel()}」。玩家将 ${summary} ${targetGuest ? `送到「${targetGuest.label}」` : '上桌'}。${guestDesc}前端已完成硬规则结算: 对应成品或酒水已从库房扣除，收入 ${formatCopper(total)} 已进入钱匣。`,
+      narrativeFact: `当前地点为「${currentSceneLabel()}」。玩家将 ${summary} ${targetGuest ? `送到「${targetGuest.label}」` : '上桌'}。${guestDesc}前端已完成硬规则结算: 对应成品或酒水已从库房扣除，基础价格合计 ${formatCopper(baseTotal)}，按酒馆声望阶段「${reputationSaleText()}」结算后收入 ${formatCopper(total)}，已进入钱匣。`,
       aiHint: '请只叙述上菜、客人反应、气氛和酒馆里的反馈。不要重新计算价格，不要改变库房、随身钱袋或钱匣。如需要更新这桌客人的状态或备注，请输出 <guest_update> JSON 数组。',
     };
   }
@@ -4053,6 +5045,7 @@ export const useGameStore = defineStore('primordia', () => {
       });
       pushLog('结算', `生成结果已入酒窖桶 · ${result.barrelName || result.name}`);
       markLocalStateDirty();
+      void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`制作结果已入酒窖桶：${result.barrelName || result.name}`));
       void writeChatSave();
       return true;
     }
@@ -4075,20 +5068,29 @@ export const useGameStore = defineStore('primordia', () => {
       ...(recipeSource ? { recipeSource } : {}),
     };
 
+    let storedResult: InventoryItem | undefined;
     if (pending) {
       Object.assign(pending, item);
       clearPendingCraftItems(pending.id);
+      storedResult = pending;
     } else {
       clearPendingCraftItems();
       const existed = inventory.value.find(stored => stored.name === item.name && stored.category === item.category && sameTagSet(stored.tags, item.tags));
       if (existed) {
         existed.qty += item.qty;
         if (!existed.recipeSource && item.recipeSource) existed.recipeSource = clonePlain(item.recipeSource);
+        storedResult = existed;
       }
-      else inventory.value.push(item);
+      else {
+        inventory.value.push(item);
+        storedResult = item;
+      }
     }
+    const savedRecipe = storedResult ? saveRecipeFromCraftedItem(storedResult) : false;
     pushLog('结算', `生成结果已入库 · ${result.name}`);
+    if (savedRecipe) pushLog('系统', `配方已记录 · ${result.name}`, { source: 'engine', authoritative: true, tone: 'green' });
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`制作结果已入库：${result.name}`));
     void writeChatSave();
     return true;
   }
@@ -4100,7 +5102,6 @@ export const useGameStore = defineStore('primordia', () => {
       id: `recipe-${now}-${Math.random().toString(36).slice(2, 7)}`,
       name: item.name,
       mode: item.recipeSource.mode,
-      technique: item.recipeSource.technique,
       ingredients: clonePlain(item.recipeSource.ingredients),
       outputName: item.name,
       outputCategory: item.category,
@@ -4121,12 +5122,9 @@ export const useGameStore = defineStore('primordia', () => {
     return recipes.value.some(saved => recipeSignature(saved) === signature);
   }
 
-  function saveRecipeFromInventoryItem(itemId: string) {
-    const item = inventory.value.find(entry => entry.id === itemId);
-    if (!item) return { ok: false as const, message: '库房里找不到这件成品。' };
+  function saveRecipeFromCraftedItem(item: InventoryItem) {
     const recipe = buildRecipeFromInventoryItem(item);
-    if (!recipe) return { ok: false as const, message: '这件成品缺少材料记录，暂时不能保存为配方。' };
-
+    if (!recipe) return false;
     const signature = recipeSignature(recipe);
     const existing = recipes.value.find(saved => recipeSignature(saved) === signature);
     if (existing) {
@@ -4136,11 +5134,20 @@ export const useGameStore = defineStore('primordia', () => {
         createdAt: existing.createdAt,
         updatedAt: Date.now(),
       });
-      pushLog('系统', `配方已更新 · ${recipe.name}`, { source: 'engine', authoritative: true, tone: 'cyan' });
     } else {
       recipes.value.unshift(recipe);
-      pushLog('系统', `配方已保存 · ${recipe.name}`, { source: 'engine', authoritative: true, tone: 'green' });
     }
+    return true;
+  }
+
+  function saveRecipeFromInventoryItem(itemId: string) {
+    const item = inventory.value.find(entry => entry.id === itemId);
+    if (!item) return { ok: false as const, message: '库房里找不到这件成品。' };
+    const recipe = buildRecipeFromInventoryItem(item);
+    if (!recipe) return { ok: false as const, message: '这件成品缺少材料记录，暂时不能保存为配方。' };
+    const existed = isRecipeSavedForItem(item);
+    saveRecipeFromCraftedItem(item);
+    pushLog('系统', `${existed ? '配方已更新' : '配方已保存'} · ${recipe.name}`, { source: 'engine', authoritative: true, tone: existed ? 'cyan' : 'green' });
     markLocalStateDirty();
     void writeChatSave();
     return { ok: true as const, message: '配方已保存。' };
@@ -4189,7 +5196,6 @@ export const useGameStore = defineStore('primordia', () => {
     const outputQty = Math.max(1, recipe.yieldQty) * safeCopies;
     const recipeSource: RecipeSource = {
       mode: recipe.mode,
-      technique: recipe.technique,
       ingredients: clonePlain(recipe.ingredients),
     };
     if (existed) {
@@ -4212,6 +5218,7 @@ export const useGameStore = defineStore('primordia', () => {
     }
     pushLog('结算', `配方复刻 · ${recipe.name} ×${safeCopies}`, { source: 'engine', authoritative: true, tone: 'green' });
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`配方复刻完成：${recipe.name} ×${safeCopies}`));
     void writeChatSave();
     return { ok: true as const, message: '制作完成。', shortages: [] as ReturnType<typeof recipeShortages> };
   }
@@ -4289,6 +5296,7 @@ export const useGameStore = defineStore('primordia', () => {
       summary,
       stockDeltas,
       narrativeFact: `当前地点仍为「${scene}」。玩家在「${action.shopName}」向${keeper}买下：${summary}；共付 ${formatCopper(total)}。前端已完成结算：随身钱袋扣除 ${formatCopper(total)}，购买物品已先装入个人行囊，尚未整理进库房；对应货架数量已减少。`,
+      settledFact: `当前位置仍为「${scene}」。玩家在「${action.shopName}」向${keeper}买下：${summary}；共付 ${formatCopper(total)}。前端已完成结算：随身钱袋减少 ${formatCopper(total)}，购买物品已进入个人行囊，对应货架数量已减少。`,
     };
   }
 
@@ -4341,6 +5349,12 @@ export const useGameStore = defineStore('primordia', () => {
     if (!consumed.ok) return { ok: false, tone: 'red', message: consumed.message };
     const item = consumed.item;
     const target = action.target?.trim() || protagonist.name || '主角';
+    const targetPath = target.startsWith('人物：')
+      ? `/临时状态/人物/${target.replace(/^人物：/, '')}/-`
+      : target.startsWith('酒馆区域：')
+        ? `/临时状态/酒馆区域/${target.replace(/^酒馆区域：/, '')}/-`
+        : '/临时状态/主角/-';
+    const targetLabel = target.replace(/^主角：|^人物：|^酒馆区域：/, '');
     const note = action.note?.trim();
     markLocalStateDirty();
     void writeChatSave();
@@ -4357,7 +5371,8 @@ export const useGameStore = defineStore('primordia', () => {
         '如果该物品产生明确短期影响，请在 <UpdateVariable> 的 <JSONPatch> 中插入临时状态。',
         '临时状态只使用字段: 名称、剩余回合、描述、来源物品。',
         '剩余回合表示从当前回合开始还能持续几个叙事回合，必须写正整数；回合结束后的倒计时由前端自动处理，不要手动给已有状态减回合。',
-        `示例: { "op": "insert", "path": "/临时状态/主角/-", "value": { "名称": "力大如牛", "剩余回合": 3, "描述": "${target}短时间内力量明显增强。", "来源物品": "${item.name}" } }`,
+        `本次目标建议路径: ${targetPath}`,
+        `示例: { "op": "insert", "path": "${targetPath}", "value": { "名称": "力大如牛", "剩余回合": 3, "描述": "${targetLabel}短时间内力量明显增强。", "来源物品": "${item.name}" } }`,
         '可写入路径: /临时状态/主角/-、/临时状态/酒馆/-、/临时状态/酒馆区域/区域名/-、/临时状态/人物/人物名/-。',
         '普通吃喝、试用或没有持续影响时，可以只叙事，不必强行生成状态。',
       ].join('\n'),
@@ -4528,6 +5543,10 @@ export const useGameStore = defineStore('primordia', () => {
       protagonist: clonePlain(protagonist),
       business: businessStateSnapshot(),
       guestGroups: clonePlain(guestGroups.value),
+      regularGuests: clonePlain(regularGuests.value),
+      pendingRegularGuestUpdates: clonePlain(pendingRegularGuestUpdates.value),
+      regularGuestBookWorldbookBinding: regularGuestBookWorldbookBinding.value ? clonePlain(regularGuestBookWorldbookBinding.value) : null,
+      regularGuestBookWorldbookStatus: regularGuestBookWorldbookStatus.value,
       regions: clonePlain(regions.value),
       heroines: clonePlain(heroines.value),
       tavernNpcActivities: clonePlain(tavernNpcActivities.value),
@@ -4535,6 +5554,8 @@ export const useGameStore = defineStore('primordia', () => {
       lastNpcActivityTurn: lastNpcActivityTurn.value,
       successfulNarrationTurn: successfulNarrationTurn.value,
       npcActivityKeepTurns: npcActivityKeepTurns.value,
+      npcActivityMinMinutes: npcActivityMinMinutes.value,
+      npcActivityMinSuccessTurns: npcActivityMinSuccessTurns.value,
       npcActivityEnabled: npcActivityEnabled.value,
       npcActivityWorldbookLibrary: npcActivityWorldbookLibrary.value ? clonePlain(npcActivityWorldbookLibrary.value) : null,
       npcActivityWorldbookBindings: clonePlain(npcActivityWorldbookBindings.value),
@@ -4588,14 +5609,22 @@ export const useGameStore = defineStore('primordia', () => {
     visitorChance.value = business.visitorChance;
     currentGuests.value = Math.min(business.currentGuests, business.guestCap);
     lastVisitorSeed.value = business.lastVisitorSeed;
+    backgroundGroups.value = normalizeBackgroundGroups(business.backgroundGroups);
+    lastBackgroundFlow.value = business.lastBackgroundFlow;
     guestGroups.value = normalizeGuestGroups(snapshot.guestGroups);
+    regularGuests.value = normalizeRegularGuestList(snapshot.regularGuests, snapshot.successfulNarrationTurn);
+    pendingRegularGuestUpdates.value = normalizeRegularGuestList(snapshot.pendingRegularGuestUpdates, snapshot.successfulNarrationTurn);
+    regularGuestBookWorldbookBinding.value = snapshot.regularGuestBookWorldbookBinding ? clonePlain(snapshot.regularGuestBookWorldbookBinding) : null;
+    regularGuestBookWorldbookStatus.value = snapshot.regularGuestBookWorldbookStatus;
     regions.value = clonePlain(snapshot.regions);
     heroines.value = clonePlain(snapshot.heroines);
     tavernNpcActivities.value = clonePlain(snapshot.tavernNpcActivities);
-    lastNpcActivityMinute.value = snapshot.lastNpcActivityMinute;
+    lastNpcActivityMinute.value = normalizeLastNpcActivityMinute(snapshot.lastNpcActivityMinute, snapshot.lastNpcActivityTurn);
     lastNpcActivityTurn.value = snapshot.lastNpcActivityTurn;
     successfulNarrationTurn.value = snapshot.successfulNarrationTurn;
     npcActivityKeepTurns.value = safeNpcActivityKeepTurns(snapshot.npcActivityKeepTurns);
+    npcActivityMinMinutes.value = safeNpcActivityMinMinutes(snapshot.npcActivityMinMinutes);
+    npcActivityMinSuccessTurns.value = safeNpcActivityMinSuccessTurns(snapshot.npcActivityMinSuccessTurns);
     npcActivityEnabled.value = snapshot.npcActivityEnabled;
     npcActivityWorldbookLibrary.value = snapshot.npcActivityWorldbookLibrary ? clonePlain(snapshot.npcActivityWorldbookLibrary) : null;
     npcActivityWorldbookBindings.value = clonePlain(snapshot.npcActivityWorldbookBindings);
@@ -4630,7 +5659,14 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   async function executePseudoZeroAction(action: GameAction, narrative?: PseudoZeroNarrativeOptions): Promise<ActionResult> {
-    const rollbackSnapshot = narrative?.autoSend || narrative?.preserveLocalState ? snapshotLocalSettlement() : null;
+    const rollbackSnapshot = narrative?.autoSend || narrative?.preserveLocalState || narrative?.queueDraft ? snapshotLocalSettlement() : null;
+    const queuedTransferItem =
+      narrative?.queueDraft && (action.type === 'INVENTORY_MOVE_TO_STORAGE' || action.type === 'INVENTORY_MOVE_TO_SATCHEL')
+        ? clonePlain(
+            (action.type === 'INVENTORY_MOVE_TO_STORAGE' ? satchel.value : inventory.value)
+              .find(item => item.id === action.itemId),
+          )
+        : null;
     const result = dispatchAction(action);
     if (!result.ok) {
       pushLog('提示', result.message, {
@@ -4643,8 +5679,60 @@ export const useGameStore = defineStore('primordia', () => {
     }
 
     await writeChatSave();
+    if (narrative?.autoSend || narrative?.preserveLocalState || narrative?.queueDraft) {
+      await writeCurrentMessageStatData(buildFrontendMvuSnapshot(result.settledFact ?? result.narrativeFact ?? result.message));
+    }
     if (!narrative) return result;
     if (result.shouldAskAI === false) return result;
+    if (narrative.queueDraft) {
+      const qty = Math.max(1, Math.floor(Number(action.type === 'INVENTORY_MOVE_TO_STORAGE' || action.type === 'INVENTORY_MOVE_TO_SATCHEL' ? action.qty : 1) || 1));
+      const buyUndoPatch: DraftUndoPatch | undefined = action.type === 'BUY_ITEMS'
+        ? {
+            type: 'BUY_ITEMS',
+            totalCopper: Math.max(0, Math.floor(Number(result.paidCopper) || 0)),
+            items: action.items
+              .map(item => ({
+                productId: item.id,
+                name: item.name,
+                category: item.category,
+                tags: Array.isArray(item.tags) ? [...item.tags] : [],
+                qty: Math.max(0, Math.floor(Number(item.qty) || 0)),
+              }))
+              .filter(item => item.qty > 0),
+            previousStocks: Object.fromEntries(
+              action.items.map(item => [item.id, Math.max(0, Math.floor(Number(item.stock) || 0))]),
+            ),
+          }
+        : undefined;
+      appendDraft(result.narrativeFact ?? result.message, {
+        type: action.type,
+        undoPatch: buyUndoPatch ?? (
+          rollbackSnapshot && !narrative.autoSend
+            ? {
+                type: 'LOCAL_SETTLEMENT',
+                snapshot: rollbackSnapshot,
+                reason: `已撤销草稿行动: ${narrative.title}`,
+                actionType: action.type,
+              }
+            :
+          queuedTransferItem && (action.type === 'INVENTORY_MOVE_TO_STORAGE' || action.type === 'INVENTORY_MOVE_TO_SATCHEL')
+            ? {
+                type: 'INVENTORY_TRANSFER',
+                direction: action.type === 'INVENTORY_MOVE_TO_STORAGE' ? 'to_storage' : 'to_satchel',
+                item: queuedTransferItem,
+                qty,
+              }
+              : undefined
+        ),
+      });
+      pushLog('提示', `${narrative.logText ?? narrative.title} 已加入本回合行动。`, {
+        source: 'engine',
+        authoritative: true,
+        tone: 'cyan',
+        actionType: action.type,
+      });
+      return result;
+    }
 
     const resultHint = result.aiHint?.trim() === '无需生成正文。' && narrative.aiHint?.trim() ? '' : (result.aiHint?.trim() ?? '');
     const narrativeHint = narrative.aiHint?.trim() ?? '';
@@ -4664,6 +5752,7 @@ export const useGameStore = defineStore('primordia', () => {
       autoSend: narrative.autoSend,
       preserveLocalState: narrative.preserveLocalState,
       settled: narrative.settled ?? !isCustomNarrative,
+      inputText: narrative.inputText,
       undoPatch:
         rollbackSnapshot && !narrative.autoSend
           ? {
@@ -4790,7 +5879,7 @@ export const useGameStore = defineStore('primordia', () => {
       message: `已进入「${shopName}」。`,
       shouldAskAI: true,
       summary: shopName,
-      narrativeFact: `玩家承接上一楼层与当前场景，已进入「${shopName}」。前端已将当前位置结算为「${currentSceneLabel()}」。店主是${keeper}。完整货架以本层 stat_data.街坊商铺 为准。`,
+      narrativeFact: `玩家承接上一楼层与当前场景，已进入「${shopName}」。前端已将当前位置结算为「${currentSceneLabel()}」。店主是${keeper}。货架只使用上一楼层 <shop> 临时块显示，不写入长期变量。`,
       aiHint: `本回合重点: 描写玩家进入「${shopName}」后的环境、${keeper}的招呼，并自然引导玩家挑选。不要刷新货架，不要改变随身钱袋、钱匣或库房。`,
     };
   }
@@ -4827,6 +5916,7 @@ export const useGameStore = defineStore('primordia', () => {
     plot.matureDay = plantedDay + Math.max(1, plot.stageMax - plot.stage);
     plot.readyNotified = false;
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`播种完成：第${plot.id.slice(2)}号畦 · ${seed.name}`));
     void writeChatSave();
     pushLog('结算', `播种完成 · 第${plot.id.slice(2)}号畦 · ${seed.name}`);
     return {
@@ -4853,6 +5943,7 @@ export const useGameStore = defineStore('primordia', () => {
       matureDay: undefined,
     });
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`开拓新田畦：第${next}号畦`));
     void writeChatSave();
     pushLog('结算', `后院新增第${next}号空畦。`);
     return {
@@ -4860,6 +5951,7 @@ export const useGameStore = defineStore('primordia', () => {
       tone: 'green',
       message: `已开拓第${next}号新畦。`,
       shouldAskAI: false,
+      summary: String(next),
       narrativeFact: `当前位置为「${currentSceneLabel()}」。玩家在农田与酒窖开拓第${next}号新畦，暂未播种。`,
       aiHint: '无需生成正文。',
     };
@@ -4871,6 +5963,7 @@ export const useGameStore = defineStore('primordia', () => {
     if (plot.stage !== 0) return { ok: false, tone: 'red', message: '只有空畦可以撤去。' };
     farmPlots.value = farmPlots.value.filter(item => item.id !== action.plotId);
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`撤去空田畦：第${plot.id.slice(2)}号畦`));
     void writeChatSave();
     pushLog('结算', `已撤去第${plot.id.slice(2)}号空畦。`);
     return {
@@ -4904,6 +5997,7 @@ export const useGameStore = defineStore('primordia', () => {
     plot.plantedDay = undefined;
     plot.matureDay = undefined;
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`农田收获入库：${action.resultName}×${action.quantity}`));
     void writeChatSave();
     pushLog('奖励', `${action.resultName}×${action.quantity} 已同步入库 · 标签: ${action.tags.join('、')}`);
     return {
@@ -4930,6 +6024,7 @@ export const useGameStore = defineStore('primordia', () => {
     });
     brews.value = brews.value.filter(item => item.id !== action.barrelId);
     markLocalStateDirty();
+    void writeCurrentMessageStatData(buildFrontendMvuSnapshot(`酒窖开桶入库：${barrel.name}×${action.bottles}`));
     void writeChatSave();
     pushLog('结算', `${barrel.name}×${action.bottles} 已同步入库。`);
     return {
@@ -4983,7 +6078,7 @@ export const useGameStore = defineStore('primordia', () => {
     const incomeCopper = Math.floor(action.hours * 1_200 * factor);
     const timeResult = advanceWorldTimeByGameHours(action.hours, `经营快进 · ${action.intensity}`);
     cashboxCopper.value += incomeCopper;
-    reputation.value = Math.min(100, reputation.value + Math.floor(factor * 2));
+    reputation.value = clampReputation(reputation.value + Math.floor(factor * 120));
     energy.value = Math.max(0, energy.value - Math.floor(action.hours * 4 * factor));
     protagonist.energy = energy.value;
     markLocalStateDirty();
@@ -5006,6 +6101,8 @@ export const useGameStore = defineStore('primordia', () => {
     if (!action.open) {
       currentGuests.value = 0;
       lastVisitorSeed.value = '';
+      backgroundGroups.value = [];
+      lastBackgroundFlow.value = '';
     }
     markLocalStateDirty();
     void writeChatSave();
@@ -5017,7 +6114,7 @@ export const useGameStore = defineStore('primordia', () => {
       message: action.open ? '酒馆已开始营业。' : '酒馆已歇业。',
       shouldAskAI: false,
       narrativeFact: action.open
-        ? `当前位置为「${currentSceneLabel()}」。玩家正式打开「${tavernName.value}」开始营业。前端已把营业状态切换为开启，当前客流 ${currentGuests.value}/${guestCap.value}，来客率 ${visitorChance.value}%。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`
+        ? `当前位置为「${currentSceneLabel()}」。玩家正式打开「${tavernName.value}」开始营业。前端已把营业状态切换为开启，当前普通客流占座 ${currentGuests.value}/${guestCap.value}，互动访客率 ${visitorChance.value}%。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`
         : `当前位置为「${currentSceneLabel()}」。玩家让「${tavernName.value}」歇业收店。前端已把营业状态切换为关闭，并清空当前客流记录。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`,
       aiHint: '无需生成正文。',
     };
@@ -5215,7 +6312,7 @@ export const useGameStore = defineStore('primordia', () => {
       energy.value = energy.max;
       protagonist.energy = energy.value;
     }
-    if (action.stat === 'reputation_delta') reputation.value = Math.min(100, Math.max(0, reputation.value + Math.floor(action.value ?? 0)));
+    if (action.stat === 'reputation_delta') reputation.value = clampReputation(reputation.value + Math.floor(action.value ?? 0));
     markLocalStateDirty();
     void writeChatSave();
     void writeCurrentMessageStatData(buildFrontendMvuSnapshot(action.reason || '调试状态调整'));
@@ -5237,6 +6334,7 @@ export const useGameStore = defineStore('primordia', () => {
   function buildFrontendMvuSnapshot(lastActionSummary = ''): PrimordiaStatData {
     void lastActionSummary;
     ensureWeatherForToday();
+    const reputationSnapshot = reputationMvuSnapshot();
     const cookingTitles = ['烧火工', '守灶童', '灶台学徒', '行炉工', '持勺匠', '灶台师傅', '首席灶师', '灶火宗师'];
     const makeMoneySnapshot = (value: number) => {
       const parts = copperToParts(value);
@@ -5351,6 +6449,8 @@ export const useGameStore = defineStore('primordia', () => {
           生命: { 当前值: heroine.hp, 上限: heroine.hpMax },
           精力: { 当前值: heroine.energy, 上限: heroine.energyMax },
           膀胱: { 当前值: heroine.bladder, 上限: heroine.bladderMax },
+          个人资金: moneyBucketFromCopper(heroine.personalFundsCopper ?? 0),
+          收入: heroine.income ?? { 职业: heroine.title, 日收入折合铜币: 0, 结算方式: '', 备注: '' },
           备注: heroine.bio,
         },
       ]),
@@ -5385,7 +6485,6 @@ export const useGameStore = defineStore('primordia', () => {
         },
       ]),
     );
-
     return {
       世界: {
         时代: openingSave.value?.era ?? '共栖历1303年',
@@ -5424,7 +6523,9 @@ export const useGameStore = defineStore('primordia', () => {
         名称: tavernName.value,
         所属领地: openingSave.value?.region ?? '韦斯托利亚',
         所在城市: openingSave.value?.tavernCity ?? location.region,
-        声望: reputation.value,
+        声望: reputationSnapshot,
+        声望值: reputationSnapshot.数值,
+        声望名: reputationSnapshot.名称,
         资金: {
           随身钱袋: makeMoneySnapshot(walletCopper.value),
           钱匣: makeMoneySnapshot(cashboxCopper.value),
@@ -5441,7 +6542,6 @@ export const useGameStore = defineStore('primordia', () => {
       },
       街坊商铺: {
         当前商铺: generatedShop.value && isCurrentShopLocation(generatedShop.value.name) ? generatedShop.value.name : '',
-        商铺: {},
       },
       人物羁绊: relationshipSnapshot,
       农田与酒窖: {
@@ -5461,6 +6561,58 @@ export const useGameStore = defineStore('primordia', () => {
 
   function buildAuthoritativeRequestData(text: string): PrimordiaStatData {
     return getAuthoritativeMvuData(undefined, text);
+  }
+
+  function preserveFrontendSettledResources(
+    target: PrimordiaStatData,
+    frontendSnapshot: PrimordiaStatData,
+    options: { preserveTime?: boolean } = {},
+  ): PrimordiaStatData {
+    const next = clonePlainData(target);
+    if (frontendSnapshot.酒馆 && typeof frontendSnapshot.酒馆 === 'object') {
+      next.酒馆 = {
+        ...(next.酒馆 && typeof next.酒馆 === 'object' ? next.酒馆 : {}),
+        ...(Object.prototype.hasOwnProperty.call(frontendSnapshot.酒馆, '资金')
+          ? { 资金: clonePlain(frontendSnapshot.酒馆.资金) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(frontendSnapshot.酒馆, '声望')
+          ? { 声望: clonePlain(frontendSnapshot.酒馆.声望) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(frontendSnapshot.酒馆, '声望值')
+          ? { 声望值: clonePlain(frontendSnapshot.酒馆.声望值) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(frontendSnapshot.酒馆, '声望名')
+          ? { 声望名: clonePlain(frontendSnapshot.酒馆.声望名) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(frontendSnapshot.酒馆, '区域')
+          ? { 区域: clonePlain(frontendSnapshot.酒馆.区域) }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(frontendSnapshot.酒馆, '客房')
+          ? { 客房: clonePlain(frontendSnapshot.酒馆.客房) }
+          : {}),
+      };
+    }
+    if (frontendSnapshot.库房 && typeof frontendSnapshot.库房 === 'object') next.库房 = clonePlain(frontendSnapshot.库房);
+    if (frontendSnapshot.行囊 && typeof frontendSnapshot.行囊 === 'object') next.行囊 = clonePlain(frontendSnapshot.行囊);
+    if (frontendSnapshot.农田与酒窖 && typeof frontendSnapshot.农田与酒窖 === 'object') {
+      next.农田与酒窖 = clonePlain(frontendSnapshot.农田与酒窖);
+    }
+    if (frontendSnapshot.街坊商铺 && typeof frontendSnapshot.街坊商铺 === 'object') {
+      next.街坊商铺 = clonePlain(frontendSnapshot.街坊商铺);
+    }
+    if (
+      options.preserveTime &&
+      frontendSnapshot.世界 &&
+      typeof frontendSnapshot.世界 === 'object' &&
+      frontendSnapshot.世界.当前历法 &&
+      typeof frontendSnapshot.世界.当前历法 === 'object'
+    ) {
+      next.世界 = {
+        ...(next.世界 && typeof next.世界 === 'object' ? next.世界 : {}),
+        当前历法: clonePlain(frontendSnapshot.世界.当前历法),
+      };
+    }
+    return next;
   }
 
   function readStoredFloorSnapshots() {
@@ -5569,12 +6721,18 @@ export const useGameStore = defineStore('primordia', () => {
       protagonist: clonePlain(protagonist),
       business: businessStateSnapshot(),
       guestGroups: clonePlain(guestGroups.value),
+      regularGuests: clonePlain(regularGuests.value),
+      pendingRegularGuestUpdates: clonePlain(pendingRegularGuestUpdates.value),
+      regularGuestBookWorldbookBinding: regularGuestBookWorldbookBinding.value ? clonePlain(regularGuestBookWorldbookBinding.value) : null,
+      regularGuestBookWorldbookStatus: regularGuestBookWorldbookStatus.value,
       heroines: clonePlain(heroines.value),
       tavernNpcActivities: clonePlain(tavernNpcActivities.value),
       lastNpcActivityMinute: lastNpcActivityMinute.value,
       lastNpcActivityTurn: lastNpcActivityTurn.value,
       successfulNarrationTurn: successfulNarrationTurn.value,
       npcActivityKeepTurns: npcActivityKeepTurns.value,
+      npcActivityMinMinutes: npcActivityMinMinutes.value,
+      npcActivityMinSuccessTurns: npcActivityMinSuccessTurns.value,
       npcActivityEnabled: npcActivityEnabled.value,
       npcActivityWorldbookLibrary: npcActivityWorldbookLibrary.value ? clonePlain(npcActivityWorldbookLibrary.value) : null,
       npcActivityWorldbookBindings: clonePlain(npcActivityWorldbookBindings.value),
@@ -5729,7 +6887,7 @@ export const useGameStore = defineStore('primordia', () => {
           ? normalizeCopperValue(source.walletCopper)
           : normalizeCopperValue(source.treasuryCopper ?? treasuryCopper.value),
       cashboxCopper: source.cashboxCopper !== undefined ? normalizeCopperValue(source.cashboxCopper) : 0,
-      reputation: Math.max(0, Math.min(100, Number(source.reputation) || reputation.value)),
+      reputation: clampReputation(source.reputation ?? reputation.value),
       energy: {
         value: Math.max(0, Math.floor(Number.isFinite(sourceEnergyValue) ? sourceEnergyValue : energy.value)),
         max: Math.max(1, Math.floor(Number.isFinite(sourceEnergyMax) ? sourceEnergyMax : energy.max)),
@@ -5737,6 +6895,16 @@ export const useGameStore = defineStore('primordia', () => {
       protagonist: clonePlain(source.protagonist ?? protagonist),
       business: normalizeBusinessState(source.business),
       guestGroups: normalizeGuestGroups(source.guestGroups),
+      regularGuests: normalizeRegularGuestList(source.regularGuests, Math.max(0, Math.floor(Number(source.successfulNarrationTurn) || 0))),
+      pendingRegularGuestUpdates: normalizeRegularGuestList(
+        source.pendingRegularGuestUpdates,
+        Math.max(0, Math.floor(Number(source.successfulNarrationTurn) || 0)),
+      ),
+      regularGuestBookWorldbookBinding:
+        source.regularGuestBookWorldbookBinding && typeof source.regularGuestBookWorldbookBinding === 'object'
+          ? clonePlain(source.regularGuestBookWorldbookBinding)
+          : null,
+      regularGuestBookWorldbookStatus: String(source.regularGuestBookWorldbookStatus || '常客簿世界书副本尚未同步。'),
       heroines: Array.isArray(source.heroines) ? clonePlain(source.heroines) : clonePlain(heroines.value),
       characterWorldbookBindings:
         source.characterWorldbookBindings && typeof source.characterWorldbookBindings === 'object'
@@ -5747,10 +6915,12 @@ export const useGameStore = defineStore('primordia', () => {
           ? clonePlain(source.characterBehaviorLibraries)
           : clonePlain(characterBehaviorLibraries.value),
       tavernNpcActivities: Array.isArray(source.tavernNpcActivities) ? clonePlain(source.tavernNpcActivities) : clonePlain(tavernNpcActivities.value),
-      lastNpcActivityMinute: Math.floor(Number(source.lastNpcActivityMinute) || currentSerialMinute()),
+      lastNpcActivityMinute: normalizeLastNpcActivityMinute(source.lastNpcActivityMinute, source.lastNpcActivityTurn),
       lastNpcActivityTurn: Math.max(0, Math.floor(Number(source.lastNpcActivityTurn) || 0)),
       successfulNarrationTurn: Math.max(0, Math.floor(Number(source.successfulNarrationTurn) || 0)),
       npcActivityKeepTurns: safeNpcActivityKeepTurns(source.npcActivityKeepTurns),
+      npcActivityMinMinutes: safeNpcActivityMinMinutes(source.npcActivityMinMinutes ?? NPC_ACTIVITY_MIN_MINUTES),
+      npcActivityMinSuccessTurns: safeNpcActivityMinSuccessTurns(source.npcActivityMinSuccessTurns ?? NPC_ACTIVITY_MIN_SUCCESS_TURNS),
       npcActivityEnabled: Boolean(source.npcActivityEnabled),
       npcActivityWorldbookLibrary:
         source.npcActivityWorldbookLibrary && typeof source.npcActivityWorldbookLibrary === 'object'
@@ -5779,7 +6949,11 @@ export const useGameStore = defineStore('primordia', () => {
       satchel: Array.isArray(source.satchel) ? clonePlain(source.satchel) : clonePlain(satchel.value),
       temporaryStates: normalizeTemporaryStateTree(source.temporaryStates),
       promiseMemos: normalizePromiseMemoList(source.promiseMemos),
-      recipes: Array.isArray(source.recipes) ? clonePlain(source.recipes) : clonePlain(recipes.value),
+      recipes: mergeRecipeEntries(
+        collectRecipeEntriesFromFloorSnapshots(source.floorSnapshots),
+        recipes.value,
+        source.recipes,
+      ),
       engineLogs: Array.isArray(source.engineLogs) ? clonePlain(source.engineLogs) : clonePlain(engineLogs.value),
       generatedShop: normalizedShop,
       generatedShopProducts: normalizedProducts,
@@ -5892,21 +7066,29 @@ export const useGameStore = defineStore('primordia', () => {
     visitorChance.value = business.visitorChance;
     currentGuests.value = Math.min(business.currentGuests, business.guestCap);
     lastVisitorSeed.value = business.lastVisitorSeed;
+    backgroundGroups.value = normalizeBackgroundGroups(business.backgroundGroups);
+    lastBackgroundFlow.value = business.lastBackgroundFlow;
     guestGroups.value = normalizeGuestGroups(normalized.guestGroups);
+    regularGuests.value = normalizeRegularGuestList(normalized.regularGuests, normalized.successfulNarrationTurn);
+    pendingRegularGuestUpdates.value = normalizeRegularGuestList(normalized.pendingRegularGuestUpdates, normalized.successfulNarrationTurn);
+    regularGuestBookWorldbookBinding.value = normalized.regularGuestBookWorldbookBinding ? clonePlain(normalized.regularGuestBookWorldbookBinding) : null;
+    regularGuestBookWorldbookStatus.value = normalized.regularGuestBookWorldbookStatus || '常客簿世界书副本尚未同步。';
     setCurrentPlace(normalized.location.protagonistLocated || normalized.location.place, {
       keepShop: Boolean(normalized.generatedShop) || normalized.location.sceneType === '商铺' || isShopLikePlace(normalized.location.protagonistLocated || normalized.location.place),
     });
 
     heroines.value = clonePlain(normalized.heroines ?? []);
-    lastNpcActivityMinute.value = Math.floor(Number(normalized.lastNpcActivityMinute) || currentSerialMinute());
+    lastNpcActivityMinute.value = normalizeLastNpcActivityMinute(normalized.lastNpcActivityMinute, normalized.lastNpcActivityTurn);
     lastNpcActivityTurn.value = Math.max(0, Math.floor(Number(normalized.lastNpcActivityTurn) || 0));
     successfulNarrationTurn.value = Math.max(
       lastNpcActivityTurn.value,
       Math.floor(Number(normalized.successfulNarrationTurn) || 0),
     );
     npcActivityKeepTurns.value = safeNpcActivityKeepTurns(normalized.npcActivityKeepTurns);
+    npcActivityMinMinutes.value = safeNpcActivityMinMinutes(normalized.npcActivityMinMinutes ?? NPC_ACTIVITY_MIN_MINUTES);
+    npcActivityMinSuccessTurns.value = safeNpcActivityMinSuccessTurns(normalized.npcActivityMinSuccessTurns ?? NPC_ACTIVITY_MIN_SUCCESS_TURNS);
     tavernNpcActivities.value = normalizeNpcActivities(normalized.tavernNpcActivities ?? [], successfulNarrationTurn.value);
-    npcActivityEnabled.value = Boolean(normalized.npcActivityEnabled && normalized.npcActivityWorldbookLibrary);
+    npcActivityEnabled.value = Boolean(normalized.npcActivityEnabled);
     npcActivityWorldbookLibrary.value = normalized.npcActivityWorldbookLibrary ? clonePlain(normalized.npcActivityWorldbookLibrary) : null;
     npcActivityWorldbookBindings.value = clonePlain(normalized.npcActivityWorldbookBindings ?? []);
     weatherWorldbookLibrary.value = normalized.weatherWorldbookLibrary ? clonePlain(normalized.weatherWorldbookLibrary) : null;
@@ -5918,15 +7100,11 @@ export const useGameStore = defineStore('primordia', () => {
     ensureWeatherForToday();
     characterWorldbookBindings.value = clonePlain(normalized.characterWorldbookBindings ?? {});
     characterBehaviorLibraries.value = clonePlain(normalized.characterBehaviorLibraries ?? {});
-    inventory.value = clonePlain(normalized.inventory);
-    satchel.value = clonePlain(normalized.satchel ?? []);
-    temporaryStates.value = normalizeTemporaryStateTree(normalized.temporaryStates);
+    // World facts are restored from the current floor stat_data, not the frontend save snapshot.
     promiseMemos.value = normalizePromiseMemoList(normalized.promiseMemos);
     recipes.value = clonePlain(normalized.recipes ?? []);
     engineLogs.value = clonePlain(normalized.engineLogs);
     draftActions.value = clonePlain(normalized.draftActions ?? []);
-    farmPlots.value = clonePlain(normalized.farmPlots ?? []);
-    brews.value = clonePlain(normalized.brews ?? []);
     openingSave.value = normalized.opening ? clonePlain(normalized.opening) : null;
     openingCompleted.value = Boolean(normalized.opening?.completed);
     openingRequired.value = false;
@@ -5935,6 +7113,42 @@ export const useGameStore = defineStore('primordia', () => {
     generatedShop.value = normalized.generatedShop ? clonePlain(normalized.generatedShop) : null;
     generatedShopProducts.value = clonePlain(normalized.generatedShopProducts);
     syncGeneratedShopWithLocation(normalized.lastMessageId);
+    return true;
+  }
+
+  function restoreFrontendOnlySnapshot(snapshot: PrimordiaSaveBody | undefined) {
+    const normalized = normalizeSaveSnapshot(snapshot);
+    if (!normalized) return false;
+    if (!openingSnapshotMatchesCurrentChat(normalized.opening, normalized.lastMessageId)) return false;
+    const nextPromiseMemos = normalizePromiseMemoList(normalized.promiseMemos);
+    const nextRecipes = mergeRecipeEntries(recipes.value, normalized.recipes);
+    const changed = Boolean(nextPromiseMemos.length || nextRecipes.length);
+    if (!changed) return false;
+    promiseMemos.value = nextPromiseMemos;
+    recipes.value = nextRecipes;
+    return true;
+  }
+
+  function restoreFrontendOnlyFromChatSave(snapshot: PrimordiaChatSaveSnapshot | undefined) {
+    if (!snapshot) return false;
+    if (restoreFrontendOnlySnapshot(snapshot)) return true;
+    const currentLastMessageId = typeof getLastMessageId === 'function' ? getLastMessageId() : Number.POSITIVE_INFINITY;
+    const floorSnapshots = snapshot.floorSnapshots && typeof snapshot.floorSnapshots === 'object' ? snapshot.floorSnapshots : {};
+    const fallback = Object.entries(floorSnapshots)
+      .map(([messageId, floorSnapshot]) => ({ messageId: Number(messageId), floorSnapshot }))
+      .filter(entry => Number.isFinite(entry.messageId) && entry.messageId <= currentLastMessageId)
+      .sort((a, b) => b.messageId - a.messageId)
+      .find(entry => {
+        const normalized = normalizeSaveSnapshot(entry.floorSnapshot);
+        return Boolean(normalized && (normalized.promiseMemos.length || normalized.recipes?.length));
+      });
+    if (fallback && restoreFrontendOnlySnapshot(fallback.floorSnapshot)) return true;
+    const mergedRecipes = mergeRecipeEntries(
+      snapshot.recipes,
+      collectRecipeEntriesFromFloorSnapshots(floorSnapshots),
+    );
+    if (!mergedRecipes.length) return false;
+    recipes.value = mergedRecipes;
     return true;
   }
 
@@ -5992,12 +7206,56 @@ export const useGameStore = defineStore('primordia', () => {
         return false;
       }
       const restoredSnapshot = snapshot ? applyChatSaveSnapshot(snapshot) : false;
+      if (!restoredSnapshot) restoreFrontendOnlyFromChatSave(snapshot);
       syncFrontendFromMessageMvu({ restoreInventory: true });
+      replayLatestCraftResultForPending();
       return restoredSnapshot;
     } catch (error) {
       console.warn('[primordia] restore chat save failed:', error);
       return false;
     }
+  }
+
+  function replayLatestCraftResultForPending() {
+    if (!inventory.value.some(isPendingCraftItem)) return false;
+    const latest = loadLatestAssistantMaintext();
+    if (!latest.craftResult) return false;
+    return applyCraftResult(latest.craftResult);
+  }
+
+  function retryPendingCraftResult() {
+    const replayed = replayLatestCraftResultForPending();
+    pushLog(
+      replayed ? '结算' : '提示',
+      replayed
+        ? '已从最近楼层重新读取制作结果，待命名占位已回填。'
+        : '最近楼层没有可读取的制作结果。可以让 AI 重新补一个 <craft_result>，或丢弃这个坏占位。',
+      {
+        source: 'engine',
+        authoritative: true,
+        tone: replayed ? 'green' : 'amber',
+        actionType: 'CRAFT_RESULT_REPLAY',
+      },
+    );
+    return replayed;
+  }
+
+  function discardPendingCraftItem(itemId: string) {
+    const before = inventory.value.length;
+    inventory.value = inventory.value.filter(item => item.id !== itemId || !isPendingCraftItem(item));
+    const removed = inventory.value.length !== before;
+    if (removed) {
+      markLocalStateDirty();
+      void writeChatSave();
+      void writeCurrentMessageStatData(buildFrontendMvuSnapshot('丢弃待命名制作占位'));
+      pushLog('结算', '已丢弃待命名制作占位。', {
+        source: 'engine',
+        authoritative: true,
+        tone: 'cyan',
+        actionType: 'CRAFT_PENDING_DISCARD',
+      });
+    }
+    return removed;
   }
 
   async function writeChatSave(latestStory?: LatestMaintextPayload) {
@@ -6047,6 +7305,12 @@ export const useGameStore = defineStore('primordia', () => {
 
   function copperForOpeningFunds(value: string) {
     const text = String(value || '');
+    const goldMatch = text.match(/(\d+)\s*金币/);
+    if (goldMatch) return Number(goldMatch[1]) * COIN_PER_SILVER * SILVER_PER_GOLD;
+    const silverMatch = text.match(/(\d+)\s*银币/);
+    if (silverMatch) return Number(silverMatch[1]) * 100;
+    const copperMatch = text.match(/(\d+)\s*铜币/);
+    if (copperMatch) return Number(copperMatch[1]);
     if (/富足|豪华|很多|高/.test(text)) return 200_000;
     if (/宽裕|充足|中高/.test(text)) return 80_000;
     if (/拮据|贫穷|很少|低/.test(text)) return 2_000;
@@ -6084,6 +7348,17 @@ export const useGameStore = defineStore('primordia', () => {
     } catch {
       return JSON.parse(JSON.stringify(value ?? {}));
     }
+  }
+
+  function cleanupUnofficialStatTopKeys(data: PrimordiaStatData) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    let changed = false;
+    Object.keys(data).forEach(key => {
+      if (OFFICIAL_PRIMORDIA_STAT_TOP_KEYS.has(key)) return;
+      delete data[key];
+      changed = true;
+    });
+    return changed;
   }
 
   function mergePlainData<T extends Record<string, any>>(base: T, patch: Record<string, any>): T {
@@ -6172,9 +7447,22 @@ export const useGameStore = defineStore('primordia', () => {
     };
   }
 
+  function normalizeOpeningReputationShape(statData: PrimordiaStatData) {
+    const root = statData as Record<string, any>;
+    const tavern = asRecord(root['酒馆']);
+    if (root['酒馆'] !== tavern) root['酒馆'] = tavern;
+    const nextValue = readReputationFromMvuData(statData) ?? 0;
+    const snapshot = reputationMvuSnapshot(nextValue);
+    tavern['声望'] = snapshot;
+    tavern['声望值'] = snapshot.数值;
+    tavern['声望名'] = snapshot.名称;
+  }
+
   function normalizeOpeningStatDataShape(statData: PrimordiaStatData) {
+    cleanupUnofficialStatTopKeys(statData);
     normalizeOpeningCalendarFromText(statData);
     normalizeOpeningLocationFromText(statData);
+    normalizeOpeningReputationShape(statData);
     return statData;
   }
 
@@ -6268,6 +7556,11 @@ export const useGameStore = defineStore('primordia', () => {
     setPlainPath(statData, '酒馆.名称', tavernNameText);
     setPlainPath(statData, '酒馆.所属领地', tavernTerritory);
     setPlainPath(statData, '酒馆.所在城市', tavernCity);
+    const openingReputationValue = /著名|热闹|富足/.test(draft.tavern.status) ? 2200 : /破旧|拮据|冷清/.test(draft.tavern.status) ? 0 : 600;
+    const openingReputation = reputationMvuSnapshot(openingReputationValue);
+    setPlainPath(statData, '酒馆.声望', openingReputation);
+    setPlainPath(statData, '酒馆.声望值', openingReputation.数值);
+    setPlainPath(statData, '酒馆.声望名', openingReputation.名称);
     setPlainPath(statData, '酒馆.今日营业状态', draft.tavern.status.trim() || '准备营业');
     setPlainPath(
       statData,
@@ -6317,7 +7610,7 @@ export const useGameStore = defineStore('primordia', () => {
     if (openingMapNode) currentMapId.value = openingMapNode.id;
     walletCopper.value = copperForOpeningFunds(draft.tavern.funds);
     cashboxCopper.value = 0;
-    reputation.value = /著名|热闹|富足/.test(draft.tavern.status) ? 18 : /破旧|拮据|冷清/.test(draft.tavern.status) ? 4 : 9;
+    reputation.value = /著名|热闹|富足/.test(draft.tavern.status) ? 2200 : /破旧|拮据|冷清/.test(draft.tavern.status) ? 0 : 600;
 
     protagonist.name = draft.character.name.trim() || '克斯';
     protagonist.race = draft.character.race.trim() || '人类';
@@ -6355,7 +7648,13 @@ export const useGameStore = defineStore('primordia', () => {
     guestCap.value = DEFAULT_BUSINESS_GUEST_CAP;
     visitorChance.value = DEFAULT_BUSINESS_VISITOR_CHANCE;
     lastVisitorSeed.value = '';
+    backgroundGroups.value = [];
+    lastBackgroundFlow.value = '';
     guestGroups.value = [];
+    regularGuests.value = [];
+    pendingRegularGuestUpdates.value = [];
+    regularGuestBookWorldbookBinding.value = null;
+    regularGuestBookWorldbookStatus.value = '常客簿世界书副本尚未同步。';
     engineLogs.value = [];
     pushLog('系统', '自定义开局已创建。', { source: 'system', authoritative: true, tone: 'cyan', actionType: 'OPENING_CREATED' });
   }
@@ -6373,6 +7672,20 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   async function confirmOpeningWorkshop(draft: OpeningWorkshopDraft, bundle: OpeningGenerationBundle) {
+    const hostName = readHostPersonaName();
+    const nextProtagonistName = cleanIdentityName(hostName) || cleanIdentityName(protagonist.name) || '';
+    const nextTavernName = cleanIdentityName(tavernName.value) || '';
+    const replacements: Array<[string, string]> = [
+      ['克斯', nextProtagonistName],
+      ['铁壶酒馆', nextTavernName],
+    ].filter(([, to]) => Boolean(to)) as Array<[string, string]>;
+    if (replacements.length) {
+      replaceOpeningIdentityText(draft, replacements);
+      replaceOpeningIdentityText(bundle, replacements);
+      if (nextProtagonistName && (!draft.character.name.trim() || draft.character.name.trim() === '克斯')) draft.character.name = nextProtagonistName;
+      if (nextTavernName && (!draft.tavern.name.trim() || draft.tavern.name.trim() === '铁壶酒馆')) draft.tavern.name = nextTavernName;
+    }
+
     let worldbookResult: Awaited<ReturnType<typeof writeOpeningWorldbook>>;
     try {
       worldbookResult = await writeOpeningWorldbook(draft, bundle);
@@ -6457,6 +7770,19 @@ export const useGameStore = defineStore('primordia', () => {
       tone: 'cyan',
       actionType: 'TAVERN_RENAME',
     });
+    void writeChatSave();
+    return true;
+  }
+
+  function currentHostPersonaName() {
+    return readHostPersonaName();
+  }
+
+  function refreshProtagonistNameFromPersona() {
+    const next = readHostPersonaName();
+    if (!next) return false;
+    protagonist.name = next;
+    markLocalStateDirty();
     void writeChatSave();
     return true;
   }
@@ -6716,9 +8042,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function persistParsedShopIntoMvuData(data: PrimordiaStatData, shop: ParsedShop) {
-    if (!data.街坊商铺 || typeof data.街坊商铺 !== 'object' || Array.isArray(data.街坊商铺)) data.街坊商铺 = {};
-    const streetShopRoot = data.街坊商铺 as Record<string, any>;
-    streetShopRoot.当前商铺 = shop.name;
+    cleanupStreetShopMvuData(data, shop.name);
 
     if (!data.世界 || typeof data.世界 !== 'object' || Array.isArray(data.世界)) data.世界 = {};
     const world = data.世界 as Record<string, any>;
@@ -6745,16 +8069,38 @@ export const useGameStore = defineStore('primordia', () => {
     }
   }
 
+  function cleanupStreetShopMvuData(data: PrimordiaStatData, preferredCurrentShopName = '') {
+    const rawRoot = data.街坊商铺;
+    const hasRoot = rawRoot && typeof rawRoot === 'object' && !Array.isArray(rawRoot);
+    const root = hasRoot ? (rawRoot as Record<string, any>) : {};
+    const rawCurrentShop = String(preferredCurrentShopName || root.当前商铺 || '').trim();
+    const placeText = readMvuPlaceText(data);
+    const shouldKeepCurrentShop =
+      Boolean(preferredCurrentShopName) ||
+      Boolean(rawCurrentShop && placeText && variablePlaceMatchesShopName(rawCurrentShop, placeText));
+    const currentShop = shouldKeepCurrentShop ? rawCurrentShop : '';
+    const nextRoot = { 当前商铺: currentShop };
+    if (!hasRoot) {
+      if (!currentShop) return false;
+      data.街坊商铺 = nextRoot;
+      return true;
+    }
+    const currentOnly =
+      Object.keys(root).length === 1 &&
+      Object.prototype.hasOwnProperty.call(root, '当前商铺') &&
+      String(root.当前商铺 ?? '').trim() === currentShop;
+    if (currentOnly) return false;
+    data.街坊商铺 = nextRoot;
+    return true;
+  }
+
   function readMvuShopRecord(data: PrimordiaStatData) {
-    return readRecordPath(data, [...legacyPathAliases('街坊商铺.商铺'), '街坊商铺.店铺']);
+    return {};
   }
 
   function readMvuCurrentShopName(data: PrimordiaStatData) {
     const currentShopName = String(readFirstPath(data, legacyPathAliases('街坊商铺.当前商铺'), '') || '').trim();
-    if (currentShopName) return currentShopName;
-    const variablePlaceText = readMvuPlaceText(data);
-    const shopRecord = readMvuShopRecord(data);
-    return Object.keys(shopRecord).find(shopName => variablePlaceMatchesShopName(shopName, variablePlaceText)) ?? '';
+    return currentShopName;
   }
 
   function readMvuActiveShopName(data: PrimordiaStatData) {
@@ -6930,8 +8276,8 @@ export const useGameStore = defineStore('primordia', () => {
       }
     }
 
-    const nextReputation = readNumberPath(data, legacyPathAliases('酒馆.声望'), undefined);
-    if (nextReputation !== undefined) reputation.value = Math.max(0, Math.min(100, Math.floor(nextReputation)));
+    const nextReputation = readReputationFromMvuData(data);
+    if (nextReputation !== undefined) reputation.value = nextReputation;
 
     const nextName = String(readFirstPath(data, ['主角.姓名', '主角.name'], '') || '').trim();
     if (nextName && !/^<.*>$/.test(nextName)) protagonist.name = nextName;
@@ -7137,6 +8483,8 @@ export const useGameStore = defineStore('primordia', () => {
         located: normalizeScenePlaceName(locatedText || location.place) || location.place,
         outfit: outfitText,
         gift: String(readFirstPath(record, ['偏好礼物', '礼物', 'gift'], '') || ''),
+        personalFundsCopper: readMoneyCopperPath(record, ['个人资金', '个人钱包', '随身钱袋', '个人资金铜币', 'personalFundsCopper'], 0),
+        income: readCharacterIncome(record, titleText),
         portraitColor: heroinePortraitColors[index % heroinePortraitColors.length],
         bio: String(readFirstPath(record, ['备注', '描述', 'bio'], '') || ''),
       });
@@ -7218,6 +8566,18 @@ export const useGameStore = defineStore('primordia', () => {
       const bladder = readNumberPath(record, ['膀胱.当前值', '膀胱', 'bladder'], undefined);
       if (bladder !== undefined) {
         heroine.bladder = Math.max(0, Math.min(heroine.bladderMax, Math.floor(bladder)));
+        changed = true;
+      }
+
+      const personalFunds = readMoneyCopperPath(record, ['个人资金', '个人钱包', '随身钱袋', '个人资金铜币', 'personalFundsCopper'], heroine.personalFundsCopper ?? 0);
+      if (personalFunds !== (heroine.personalFundsCopper ?? 0)) {
+        heroine.personalFundsCopper = personalFunds;
+        changed = true;
+      }
+
+      const nextIncome = readCharacterIncome(record, heroine.title);
+      if (JSON.stringify(nextIncome) !== JSON.stringify(heroine.income ?? readCharacterIncome({}, heroine.title))) {
+        heroine.income = nextIncome;
         changed = true;
       }
 
@@ -7459,6 +8819,7 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function applyMvuStatData(data: PrimordiaStatData, options: { restoreInventory?: boolean } = {}) {
+    cleanupStreetShopMvuData(data);
     const mvuCurrentShopName = readMvuActiveShopName(data);
     const mvuPlaceText = readMvuPlaceText(data);
     currentVariableShopName.value = mvuCurrentShopName;
@@ -7631,11 +8992,50 @@ export const useGameStore = defineStore('primordia', () => {
   const mvuReloadSuppressedUntil = ref(0);
 
   function syncFrontendFromMessageMvu(options: { messageId?: number; restoreInventory?: boolean } = {}) {
-    const statData = readMessageStatData(options.messageId);
-    if (!statData) return false;
+    const rawStatData = readMessageStatData(options.messageId);
+    if (!rawStatData) return false;
+    const statData = clonePlainData(rawStatData);
     applyMvuStatData(statData, { restoreInventory: options.restoreInventory ?? true });
     syncGeneratedShopWithLocation(options.messageId);
+    void migrateCurrentReputationMvuShape(options.messageId);
     return true;
+  }
+
+  function needsReputationMvuShapeMigration(data: PrimordiaStatData) {
+    const tavern = asRecord(readFirstPath(data, ['酒馆'], undefined));
+    if (!Object.keys(tavern).length) return false;
+    const reputationRecord = asRecord(tavern['声望']);
+    if (!Object.keys(reputationRecord).length) return true;
+    const hasStructuredReputation =
+      readNumberPath(reputationRecord, ['数值'], undefined) !== undefined &&
+      String(readFirstPath(reputationRecord, ['名称'], '') || '').trim() !== '' &&
+      readNumberPath(reputationRecord, ['乘数'], undefined) !== undefined;
+    if (!hasStructuredReputation) return true;
+    if (readNumberPath(tavern, ['声望值'], undefined) === undefined) return true;
+    if (!String(readFirstPath(tavern, ['声望名'], '') || '').trim()) return true;
+    return false;
+  }
+
+  async function migrateCurrentReputationMvuShape(messageId?: number) {
+    const rawStatData = readMessageStatData(messageId);
+    if (!rawStatData) return false;
+    const statData = clonePlainData(rawStatData);
+    if (!needsReputationMvuShapeMigration(statData)) return false;
+    const nextValue = readReputationFromMvuData(statData) ?? reputation.value;
+    const snapshot = reputationMvuSnapshot(nextValue);
+    setPlainPath(statData, '酒馆.声望', snapshot);
+    setPlainPath(statData, '酒馆.声望值', snapshot.数值);
+    setPlainPath(statData, '酒馆.声望名', snapshot.名称);
+    const wroteMessage = await writeCurrentMessageStatData(statData, messageId);
+    if (wroteMessage) {
+      pushLog('系统', `已迁移酒馆声望变量结构：${snapshot.名称} ${snapshot.数值}/${snapshot.范围}。`, {
+        source: 'engine',
+        authoritative: true,
+        tone: 'cyan',
+        actionType: 'VARIABLE_MIGRATION',
+      });
+    }
+    return wroteMessage;
   }
 
   function statDataWithCurrentTemporaryStates(statData: PrimordiaStatData) {
@@ -7655,8 +9055,14 @@ export const useGameStore = defineStore('primordia', () => {
     if (mvuEnergy !== undefined && Math.floor(mvuEnergy) !== Math.floor(energy.value)) mismatches.push(`主角精力 ${energy.value}/${mvuEnergy}`);
     const mvuPlace = String(readFirstPath(data, ['主角.所在位置', '世界.当前地点.具体位置'], '') || '').trim();
     if (mvuPlace && normalizeScenePlaceName(mvuPlace) !== normalizeScenePlaceName(location.place)) mismatches.push(`主角位置 ${location.place}/${mvuPlace}`);
-    const mvuRegionCount = Object.keys(readRecordPath(data, ['酒馆.区域'])).length;
-    if (mvuRegionCount && mvuRegionCount !== regions.value.length) mismatches.push(`酒馆区域 ${regions.value.length}/${mvuRegionCount}`);
+    const mvuRegionNames = new Set(Object.keys(readRecordPath(data, ['酒馆.区域'])));
+    const roomRoot = readRecordPath(data, ['酒馆.客房', '酒馆.房间']);
+    if (Object.keys(roomRoot).length > 0) mvuRegionNames.add('客房');
+    const uiRegionNames = regions.value.map(region => region.name).filter(Boolean);
+    const missingMvuRegions = uiRegionNames.filter(name => !mvuRegionNames.has(name));
+    if (mvuRegionNames.size && missingMvuRegions.length) {
+      mismatches.push(`酒馆区域缺少 ${missingMvuRegions.slice(0, 3).join('、')}`);
+    }
     const mvuInventoryCount = countInventoryItemsFromMvu(data, '库房');
     if (mvuInventoryCount && mvuInventoryCount !== inventory.value.length) mismatches.push(`库房 ${inventory.value.length}/${mvuInventoryCount}`);
     const mvuSatchelCount = countInventoryItemsFromMvu(data, '行囊');
@@ -8001,6 +9407,7 @@ export const useGameStore = defineStore('primordia', () => {
       applyInventoryFromMvu?: boolean;
       useFrontendAuthority?: boolean;
       npcActivityPlan?: TavernNpcActivityPlan | null;
+      backgroundFlowPlan?: BackgroundFlowPlan | null;
       businessVisitorPlan?: TavernBusinessVisitorPlan | null;
     } = {},
   ): Promise<boolean> {
@@ -8027,8 +9434,7 @@ export const useGameStore = defineStore('primordia', () => {
       const isPrebuiltNarrationPrompt = /<玩家本回合行动>|【叙述者权限边界】|【当前权威局势】|【输出格式】/.test(scenePromptForRequest);
       const prebuiltAllowsVariablePatch =
         isPrebuiltNarrationPrompt &&
-        !scenePromptForRequest.includes('前端已结算:') &&
-        /自由行动造成的库存、状态或地点变化|若行动自然影响库存/.test(scenePromptForRequest);
+        /自由行动造成的库存、状态或地点变化|若行动自然影响库存|普通营业客流|通过\s*MVU\/变量体现|<UpdateVariable>|<JSONPatch>/.test(scenePromptForRequest);
       const canApplyScenePatch = true;
       const canApplyInventoryPatch = applyInventoryPatch && (!isPrebuiltNarrationPrompt || prebuiltAllowsVariablePatch);
       const result = await runUnifiedNarrativeRequest(scenePromptForRequest, {
@@ -8070,6 +9476,9 @@ export const useGameStore = defineStore('primordia', () => {
           : options.useFrontendAuthority
             ? clonePlainData(authoritativeData)
             : null;
+        if (finalMvuData && options.useFrontendAuthority) {
+          finalMvuData = preserveFrontendSettledResources(finalMvuData, authoritativeData);
+        }
         if (finalMvuData && result.latest?.shop) {
           persistParsedShopIntoMvuData(finalMvuData, result.latest.shop);
         }
@@ -8104,6 +9513,7 @@ export const useGameStore = defineStore('primordia', () => {
         }
         if (result.latest?.craftResult) applyCraftResult(result.latest.craftResult);
         if (result.latest?.guestUpdates?.length) applyGuestUpdates(result.latest.guestUpdates, successfulNarrationTurn.value + 1);
+        if (result.latest?.regularGuestUpdates?.length) addPendingRegularGuestUpdates(result.latest.regularGuestUpdates, successfulNarrationTurn.value + 1);
         if (result.latest?.promiseUpdates?.length) applyPromiseUpdates(result.latest.promiseUpdates);
         const completedTurn = successfulNarrationTurn.value + 1;
         if (result.latest?.characterBehaviorUpdates?.length) {
@@ -8117,6 +9527,7 @@ export const useGameStore = defineStore('primordia', () => {
         } else if (sceneUpdatedFromMvu && !isCurrentShopLocation()) clearGeneratedShop({ silent: true });
         commitTavernNpcActivityPlan(options.npcActivityPlan ?? null, completedTurn);
         commitManualWorkerAssignNpcActivities(completedTurn);
+        commitBackgroundFlowPlan(options.backgroundFlowPlan ?? null);
         commitBusinessVisitorPlan(options.businessVisitorPlan ?? null);
         markPromiseMemosTriggered(duePromiseMemoIds, completedTurn);
         const temporaryStatesTicked = decrementExistingTemporaryStates(temporaryStateKeysBeforeTurn);
@@ -8166,6 +9577,9 @@ export const useGameStore = defineStore('primordia', () => {
     const canContinue = await continueFromLoadedCheckpoint();
     if (!canContinue) return;
     const combined = [actionDraft.value.trim(), playerInput.value.trim()].filter(Boolean).join('\n—— 玩家旁白 ——\n');
+    const hiddenRequirements = draftActions.value.filter(action => action.hidden);
+    const hiddenAiHint = hiddenRequirements.map(action => action.aiHint?.trim()).filter(Boolean).join('\n\n');
+    const hiddenSettledFact = aggregateHiddenSettledFacts(hiddenRequirements);
     const isPrebuiltNarrationPrompt =
       /<玩家本回合行动>|【叙述者权限边界】|【当前权威局势】|【输出格式】/.test(combined) ||
       combined.includes('【系统已结算 / 权威局势】') ||
@@ -8180,7 +9594,8 @@ export const useGameStore = defineStore('primordia', () => {
       });
       return;
     }
-    const npcActivityPlan = isPrebuiltNarrationPrompt ? null : prepareTavernNpcActivityPlan(combined);
+    const npcActivityPlan = isPrebuiltNarrationPrompt ? null : prepareTavernNpcActivityPlan(combined, { logSkip: true });
+    const backgroundFlowPlan = isPrebuiltNarrationPrompt ? null : prepareBackgroundFlowPlan();
     const businessVisitorPlan = isPrebuiltNarrationPrompt ? null : prepareBusinessVisitorPlan();
     const scenePrompt = isPrebuiltNarrationPrompt
       ? combined
@@ -8188,11 +9603,22 @@ export const useGameStore = defineStore('primordia', () => {
           userText: `<user>${combined}</user>`,
           actionType: 'CUSTOM_ACTION',
           actionTitle: '玩家本回合行动',
-          aiHint: customActionResult?.aiHint,
+          settledFact: hiddenSettledFact || undefined,
+          aiHint: [customActionResult?.aiHint, hiddenAiHint].filter(Boolean).join('\n\n'),
           npcActivityPlan,
+          backgroundFlowPlan,
           businessVisitorPlan,
         });
-    await submitNarrationPrompt(scenePrompt, combined, { ...options, npcActivityPlan, businessVisitorPlan });
+    const preserveQueuedSettlement = hiddenRequirements.some(action => action.settledFact);
+    await submitNarrationPrompt(scenePrompt, combined, {
+      ...options,
+      ...(preserveQueuedSettlement
+        ? { reloadMvu: false, applyInventoryFromMvu: false, useFrontendAuthority: true }
+        : {}),
+      npcActivityPlan,
+      backgroundFlowPlan,
+      businessVisitorPlan,
+    });
   }
 
   async function previewActionDraftBeforeSend() {
@@ -8200,11 +9626,15 @@ export const useGameStore = defineStore('primordia', () => {
     if (!actionDraft.value.trim() && !playerInput.value.trim()) return false;
 
     const combined = [actionDraft.value.trim(), playerInput.value.trim()].filter(Boolean).join('\n—— 玩家旁白 ——\n');
+    const hiddenRequirements = draftActions.value.filter(action => action.hidden);
+    const hiddenAiHint = hiddenRequirements.map(action => action.aiHint?.trim()).filter(Boolean).join('\n\n');
+    const hiddenSettledFact = aggregateHiddenSettledFacts(hiddenRequirements);
     const isPrebuiltNarrationPrompt =
       /<玩家本回合行动>|【叙述者权限边界】|【当前权威局势】|【输出格式】/.test(combined) ||
       combined.includes('【系统已结算 / 权威局势】') ||
       combined.includes('【本回合标准结算单】');
     const npcActivityPlan = isPrebuiltNarrationPrompt ? null : prepareTavernNpcActivityPlan(combined);
+    const backgroundFlowPlan = isPrebuiltNarrationPrompt ? null : prepareBackgroundFlowPlan();
     const businessVisitorPlan = isPrebuiltNarrationPrompt ? null : prepareBusinessVisitorPlan();
     const scenePrompt = isPrebuiltNarrationPrompt
       ? combined
@@ -8212,7 +9642,10 @@ export const useGameStore = defineStore('primordia', () => {
           userText: `<user>${combined}</user>`,
           actionType: 'CUSTOM_ACTION',
           actionTitle: '玩家本回合行动',
+          settledFact: hiddenSettledFact || undefined,
+          aiHint: hiddenAiHint,
           npcActivityPlan,
+          backgroundFlowPlan,
           businessVisitorPlan,
         });
 
@@ -8244,7 +9677,8 @@ export const useGameStore = defineStore('primordia', () => {
     const existingText = [actionDraft.value.trim(), playerInput.value.trim()].filter(Boolean).join('\n—— 玩家旁白 ——\n');
     const combinedFact = [existingText, action.fact].filter(Boolean).join('\n');
     const settledFact = action.settled === false ? undefined : action.settledFact ?? action.fact;
-    const npcActivityPlan = prepareTavernNpcActivityPlan(combinedFact);
+    const npcActivityPlan = prepareTavernNpcActivityPlan(combinedFact, { logSkip: true });
+    const backgroundFlowPlan = prepareBackgroundFlowPlan();
     const businessVisitorPlan = prepareBusinessVisitorPlan();
     const prompt = buildNarrationPrompt({
       userText: `<user>${combinedFact}</user>`,
@@ -8254,6 +9688,7 @@ export const useGameStore = defineStore('primordia', () => {
       timeChange: settledFact ? action.timeChange : undefined,
       aiHint: action.aiHint,
       npcActivityPlan,
+      backgroundFlowPlan,
       businessVisitorPlan,
     });
     pushLog('结算', action.logText ?? `${action.title} · 前端事实已记录`, {
@@ -8277,12 +9712,12 @@ export const useGameStore = defineStore('primordia', () => {
         applyInventoryFromMvu: !preserveLocalState,
         useFrontendAuthority: preserveLocalState,
         npcActivityPlan,
+        backgroundFlowPlan,
         businessVisitorPlan,
       });
     } else {
-      clearActionDraft();
-      playerInput.value = '';
-      appendDraft(prompt, { type: action.type, undoPatch: action.undoPatch });
+      appendPlayerInput(action.inputText ?? action.fact, action.type);
+      appendHiddenDraftRequirement(action);
       return true;
     }
   }
@@ -8315,6 +9750,9 @@ export const useGameStore = defineStore('primordia', () => {
     treasuryParts,
     treasuryText,
     reputation,
+    reputationSaleStage,
+    salePriceForItem,
+    reputationSaleText,
     energy,
     protagonist,
     regions,
@@ -8323,7 +9761,13 @@ export const useGameStore = defineStore('primordia', () => {
     guestCap,
     visitorChance,
     lastVisitorSeed,
+    backgroundGroups,
+    lastBackgroundFlow,
     guestGroups,
+    regularGuests,
+    pendingRegularGuestUpdates,
+    regularGuestBookWorldbookBinding,
+    regularGuestBookWorldbookStatus,
     inventory,
     satchel,
     temporaryStates,
@@ -8336,6 +9780,8 @@ export const useGameStore = defineStore('primordia', () => {
     tavernNpcActivities,
     successfulNarrationTurn,
     npcActivityKeepTurns,
+    npcActivityMinMinutes,
+    npcActivityMinSuccessTurns,
     npcActivityEnabled,
     npcActivityWorldbookLibrary,
     npcActivityWorldbookBindings,
@@ -8389,6 +9835,8 @@ export const useGameStore = defineStore('primordia', () => {
     clearNpcActivityWorldbookBindings,
     setNpcActivityEnabled,
     setNpcActivityKeepTurns,
+    setNpcActivityMinMinutes,
+    setNpcActivityMinSuccessTurns,
     npcActivityWorldbookTemplate,
     weatherLibraryStats,
     refreshWeatherWorldbookLibrary,
@@ -8442,12 +9890,20 @@ export const useGameStore = defineStore('primordia', () => {
     updateGuestGroup,
     removeGuestGroup,
     markGuestGroupServed,
+    addPendingRegularGuestUpdates,
+    confirmRegularGuest,
+    saveRegularGuest,
+    discardPendingRegularGuest,
+    removeRegularGuest,
+    syncRegularGuestBookWorldbook,
     bindCharacterWorldbookEntry,
     unbindCharacterWorldbookEntry,
     touchCharacterWorldbookBinding,
     deleteHeroine,
     saveRecipeFromInventoryItem,
     isRecipeSavedForItem,
+    retryPendingCraftResult,
+    discardPendingCraftItem,
     recipeShortages,
     craftRecipe,
     deleteRecipe,
@@ -8471,6 +9927,8 @@ export const useGameStore = defineStore('primordia', () => {
     applyMvuStatData,
     clearGeneratedShop,
     isCurrentShopLocation,
+    currentHostPersonaName,
+    refreshProtagonistNameFromPersona,
     setTavernName,
     runStoryAction,
     sendActionDraft,

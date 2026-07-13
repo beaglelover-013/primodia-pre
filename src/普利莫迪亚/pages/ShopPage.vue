@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useGameStore, formatCopper, type BuyActionItem, type ShopProduct } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 
@@ -8,6 +8,8 @@ const game = useGameStore();
 const cart = ref<Record<string, number>>({});
 const freeShopQuery = ref('');
 const shopActionText = ref('');
+let quantityRepeatDelay = 0;
+let quantityRepeatTimer = 0;
 
 const activeShop = computed(() => {
   if (game.generatedShop && game.isCurrentShopLocation(game.generatedShop.name)) return game.generatedShop;
@@ -93,7 +95,7 @@ async function submitUnifiedShopAction() {
   }, {
     type: 'CUSTOM_ACTION',
     title: '补充行动',
-    aiHint: '请承接上一楼层正文末尾叙述。若玩家行动导致移动或离开，只通过 MVU 地点补丁表达；不要刷新货架，不要新增未结算的购买结果。',
+    aiHint: '请承接当前场景和权威局势叙述。若玩家行动导致移动或离开，只通过 MVU 地点补丁表达；不要刷新货架，不要新增未结算的购买结果。',
     logText: `CUSTOM_ACTION 路 ${text.slice(0, 28)}${text.length > 28 ? '...' : ''}`,
     autoSend: true,
     preserveLocalState: true,
@@ -117,6 +119,23 @@ function dec(p: ShopProduct) {
   else nextCart[p.id] = nextQty;
   cart.value = nextCart;
 }
+
+function stopQuantityRepeat() {
+  window.clearTimeout(quantityRepeatDelay);
+  window.clearInterval(quantityRepeatTimer);
+  quantityRepeatDelay = 0;
+  quantityRepeatTimer = 0;
+}
+
+function startQuantityRepeat(action: () => void) {
+  stopQuantityRepeat();
+  action();
+  quantityRepeatDelay = window.setTimeout(() => {
+    quantityRepeatTimer = window.setInterval(action, 80);
+  }, 350);
+}
+
+onBeforeUnmount(stopQuantityRepeat);
 
 async function checkout() {
   if (!activeShop.value || cartTotal.value === 0) return;
@@ -246,9 +265,25 @@ async function checkout() {
               <footer>
                 <span>余 {{ p.stock }}</span>
                 <div class="qty">
-                  <button @click="dec(p)"><PmIcon name="minus" :size="11" /></button>
+                  <button
+                    :disabled="!cart[p.id]"
+                    @pointerdown.prevent="startQuantityRepeat(() => dec(p))"
+                    @pointerup="stopQuantityRepeat"
+                    @pointerleave="stopQuantityRepeat"
+                    @pointercancel="stopQuantityRepeat"
+                    @keydown.enter.prevent="dec(p)"
+                    @keydown.space.prevent="dec(p)"
+                  ><PmIcon name="minus" :size="11" /></button>
                   <b>{{ cart[p.id] ?? 0 }}</b>
-                  <button @click="add(p)"><PmIcon name="plus" :size="11" /></button>
+                  <button
+                    :disabled="(cart[p.id] ?? 0) >= p.stock"
+                    @pointerdown.prevent="startQuantityRepeat(() => add(p))"
+                    @pointerup="stopQuantityRepeat"
+                    @pointerleave="stopQuantityRepeat"
+                    @pointercancel="stopQuantityRepeat"
+                    @keydown.enter.prevent="add(p)"
+                    @keydown.space.prevent="add(p)"
+                  ><PmIcon name="plus" :size="11" /></button>
                 </div>
               </footer>
             </article>
@@ -605,6 +640,10 @@ blockquote {
   background: var(--pm-grad-gold-soft);
   border: 1px solid var(--pm-edge-soft);
   border-radius: 3px;
+}
+.qty button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .qty b {
   min-width: 16px;

@@ -41,6 +41,7 @@ const navGroups: NavGroup[] = [
     sub: '区域 · 商铺 · 账单',
     items: [
       { id: 'tavern', name: '酒馆', icon: 'tavern', sub: '主厅 · 房间 · 经营', status: 'ready' },
+      { id: 'regularGuests', name: '常客簿', icon: 'people', sub: '老面孔 · 团体 · 回访', status: 'ready' },
       { id: 'shop', name: '街坊商铺', icon: 'coin', sub: '店铺 · 货架 · 购买', status: 'ready' },
       { id: 'ledger', name: '账单', icon: 'ledger', sub: '历史足迹 · 资产', status: 'ready' },
     ],
@@ -86,6 +87,18 @@ function groupForTab(id: TabId) {
 
 const activeGroupId = ref(groupForTab(game.currentTab).id);
 const activeGroup = computed(() => navGroups.find(group => group.id === activeGroupId.value) ?? groupForTab(game.currentTab));
+const tavernReputationStage = computed(() => game.reputationSaleStage);
+const tavernReputationValue = computed(() => Math.max(0, Math.floor(Number(game.reputation) || 0)));
+const tavernReputationCap = computed(() => {
+  const stage = tavernReputationStage.value;
+  return stage.index >= 5 ? `${stage.min}+` : String(stage.max);
+});
+const tavernReputationProgress = computed(() => {
+  const stage = tavernReputationStage.value;
+  if (stage.index >= 5) return 100;
+  const span = Math.max(1, stage.max - stage.min);
+  return Math.max(0, Math.min(100, ((tavernReputationValue.value - stage.min) / span) * 100));
+});
 
 watch(
   () => game.currentTab,
@@ -154,7 +167,17 @@ function switchTab(id: TabId) {
     </nav>
 
     <div class="scroll-foot">
-      <div class="oath">「烛火、账本、啤酒泡沫, 以及仍未落笔的夜晚。」</div>
+      <div class="tavern-status" aria-label="酒馆声望">
+        <div class="tavern-status-name">{{ game.tavernName }}</div>
+        <div class="tavern-status-rank">{{ tavernReputationStage.label }}</div>
+        <div class="tavern-status-meter" aria-hidden="true">
+          <span :style="{ width: `${tavernReputationProgress}%` }"></span>
+        </div>
+        <div class="tavern-status-row">
+          <span>声望 {{ tavernReputationValue }} / {{ tavernReputationCap }}</span>
+          <span>售价 ×{{ tavernReputationStage.multiplier }}</span>
+        </div>
+      </div>
       <div class="scroll-band">CHRONICLES</div>
     </div>
   </aside>
@@ -195,14 +218,51 @@ function switchTab(id: TabId) {
   color: var(--pm-parch-soft);
   text-align: center;
 }
-.oath {
+.tavern-status {
   font-family: var(--pm-font-body);
-  font-size: calc(11.5px * var(--pm-text-scale));
+  margin-bottom: 10px;
+  padding: 10px 10px 9px;
+  border: 1px solid rgba(243, 220, 162, 0.18);
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, rgba(243, 220, 162, 0.08), rgba(0, 0, 0, 0.08)),
+    rgba(12, 8, 4, 0.18);
+}
+.tavern-status-name {
+  font-family: var(--pm-font-display);
+  font-size: calc(12px * var(--pm-text-scale));
+  letter-spacing: 0.18em;
   color: var(--pm-parch-soft);
   text-align: center;
-  font-style: italic;
-  margin-bottom: 8px;
-  line-height: 1.7;
+}
+.tavern-status-rank {
+  margin-top: 3px;
+  font-family: var(--pm-font-display);
+  font-size: calc(14px * var(--pm-text-scale));
+  letter-spacing: 0.12em;
+  color: var(--pm-gold-bright);
+  text-align: center;
+}
+.tavern-status-meter {
+  height: 4px;
+  margin: 8px 0 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(243, 220, 162, 0.13);
+}
+.tavern-status-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(185, 131, 35, 0.88), rgba(243, 220, 162, 0.9));
+}
+.tavern-status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: calc(10.5px * var(--pm-text-scale));
+  color: rgba(243, 220, 162, 0.7);
+  line-height: 1.35;
 }
 
 .nav {

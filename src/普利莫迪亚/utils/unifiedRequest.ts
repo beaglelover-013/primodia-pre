@@ -4,6 +4,7 @@
   parseMaintext,
   parseOptions,
   parsePromiseUpdates,
+  parseRegularGuestUpdates,
   parseShop,
   parseSum,
   type LatestMaintextPayload,
@@ -90,9 +91,19 @@ const PRIMORDIA_STORY_UPDATED = 'primordia:story-updated';
 const PRIMORDIA_STORY_STREAMING = 'primordia:story-streaming';
 const PRIMORDIA_PROMPT_DEBUG_UPDATED = 'primordia:prompt-debug-updated';
 const PRIMORDIA_FINAL_PROMPT_DEBUG_UPDATED = 'primordia:final-prompt-debug-updated';
+const PROMPT_DEBUG_STORAGE_KEY = 'primordia.promptDebugSnapshots.v1';
+const FINAL_PROMPT_DEBUG_STORAGE_KEY = 'primordia.finalPromptDebugSnapshots.v1';
 const GLOBAL_WAIT_TIMEOUT_MS = 1200;
-const promptDebugSnapshots: PromptDebugSnapshot[] = [];
-const finalPromptDebugSnapshots: FinalPromptDebugSnapshot[] = [];
+const PROMPT_DEBUG_LIMIT = 12;
+const FINAL_PROMPT_DEBUG_LIMIT = 8;
+const promptDebugSnapshots: PromptDebugSnapshot[] = loadDebugSnapshots<PromptDebugSnapshot>(
+  PROMPT_DEBUG_STORAGE_KEY,
+  PROMPT_DEBUG_LIMIT,
+);
+const finalPromptDebugSnapshots: FinalPromptDebugSnapshot[] = loadDebugSnapshots<FinalPromptDebugSnapshot>(
+  FINAL_PROMPT_DEBUG_STORAGE_KEY,
+  FINAL_PROMPT_DEBUG_LIMIT,
+);
 let finalPromptDebugSubscribed = false;
 let latestWorldbookEntries: Array<Record<string, unknown>> = [];
 
@@ -120,11 +131,40 @@ function emitFinalPromptDebugUpdated() {
   );
 }
 
+function loadDebugSnapshots<T>(key: string, limit: number): T[] {
+  try {
+    const raw = window.localStorage?.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, limit) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistDebugSnapshots<T>(key: string, snapshots: T[], limit: number) {
+  try {
+    let items = snapshots.slice(0, limit);
+    while (items.length > 0) {
+      try {
+        window.localStorage?.setItem(key, JSON.stringify(items));
+        return;
+      } catch {
+        items = items.slice(0, -1);
+      }
+    }
+    window.localStorage?.removeItem(key);
+  } catch {
+    // Debug persistence must never block generation.
+  }
+}
+
 function rememberPromptDebug(snapshot: PromptDebugSnapshot) {
   const existingIndex = promptDebugSnapshots.findIndex(item => item.id === snapshot.id);
   if (existingIndex >= 0) promptDebugSnapshots.splice(existingIndex, 1, snapshot);
   else promptDebugSnapshots.unshift(snapshot);
-  promptDebugSnapshots.splice(12);
+  promptDebugSnapshots.splice(PROMPT_DEBUG_LIMIT);
+  persistDebugSnapshots(PROMPT_DEBUG_STORAGE_KEY, promptDebugSnapshots, PROMPT_DEBUG_LIMIT);
   emitPromptDebugUpdated();
 }
 
@@ -188,7 +228,8 @@ function rememberFinalPromptDebug(options: {
     })),
   };
   finalPromptDebugSnapshots.unshift(snapshot);
-  finalPromptDebugSnapshots.splice(8);
+  finalPromptDebugSnapshots.splice(FINAL_PROMPT_DEBUG_LIMIT);
+  persistDebugSnapshots(FINAL_PROMPT_DEBUG_STORAGE_KEY, finalPromptDebugSnapshots, FINAL_PROMPT_DEBUG_LIMIT);
   emitFinalPromptDebugUpdated();
   return snapshot;
 }
@@ -504,10 +545,14 @@ function normalizeAssistantMessage(raw: string): {
   const cleaned = stripThinkingBlocks(raw);
   const craftResult = extractLastTag(cleaned, 'craft_result');
   const guestUpdate = extractLastTag(cleaned, 'guest_update');
+  const regularGuestUpdate = extractLastTag(cleaned, 'regular_guest_update');
   const promiseUpdate = extractLastTag(cleaned, 'promise_update');
   const characterBehaviorUpdate = extractLastTag(cleaned, 'character_behavior_update');
   const shop = extractLastTag(cleaned, 'shop');
   let maintext = stripHiddenOutputTags(extractLastTag(cleaned, 'maintext') || extractLastTag(cleaned, 'NARRATIVE'));
+  if (maintext && !hasRenderableStreamingText(maintext)) {
+    maintext = '';
+  }
   if (!maintext && craftResult) {
     maintext = '炉台旁的制作已经完成，结果被登记入册。';
   }
@@ -521,6 +566,9 @@ function normalizeAssistantMessage(raw: string): {
       .replace(/^\s*(收到(?:命令|指令)?[，,。.！!：:]?|明白[，,。.！!：:]?|好的[，,。.！!：:]?)/, '')
       .replace(/^\s*(我(?:会|将)(?:严格)?(?:遵守|按照|根据)[\s\S]{0,80}?(?:执行|进行|回复)[，,。.！!：:]?)/, '')
       .trim();
+    if (maintext && !hasRenderableStreamingText(maintext)) {
+      maintext = '';
+    }
   }
   if (!maintext) throw new Error('生成内容缺少 <maintext> 正文。');
 
@@ -535,6 +583,7 @@ function normalizeAssistantMessage(raw: string): {
   if (shop) message += `\n\n<shop>\n${shop}\n</shop>`;
   if (craftResult) message += `\n\n<craft_result>\n${craftResult}\n</craft_result>`;
   if (guestUpdate) message += `\n\n<guest_update>\n${guestUpdate}\n</guest_update>`;
+  if (regularGuestUpdate) message += `\n\n<regular_guest_update>\n${regularGuestUpdate}\n</regular_guest_update>`;
   if (promiseUpdate) message += `\n\n<promise_update>\n${promiseUpdate}\n</promise_update>`;
   if (characterBehaviorUpdate) message += `\n\n<character_behavior_update>\n${characterBehaviorUpdate}\n</character_behavior_update>`;
 
@@ -552,6 +601,7 @@ function normalizeAssistantMessage(raw: string): {
       shop: parseShop(message),
       craftResult: parseCraftResult(message),
       guestUpdates: parseGuestUpdates(message),
+      regularGuestUpdates: parseRegularGuestUpdates(message),
       promiseUpdates: parsePromiseUpdates(message),
       characterBehaviorUpdates: parseCharacterBehaviorUpdates(message),
       fullMessage: mvuMessage,
@@ -564,6 +614,7 @@ function stripHiddenOutputTags(content: string): string {
     .replace(/<shop\b[^>]*>[\s\S]*?<\/shop>/gi, '')
     .replace(/<craft_result\b[^>]*>[\s\S]*?<\/craft_result>/gi, '')
     .replace(/<guest_update\b[^>]*>[\s\S]*?<\/guest_update>/gi, '')
+    .replace(/<regular_guest_update\b[^>]*>[\s\S]*?<\/regular_guest_update>/gi, '')
     .replace(/<promise_update\b[^>]*>[\s\S]*?<\/promise_update>/gi, '')
     .replace(/<character_behavior_update\b[^>]*>[\s\S]*?<\/character_behavior_update>/gi, '')
     .replace(/<UpdateVariable\b[^>]*>[\s\S]*?<\/UpdateVariable>/gi, '')
@@ -1076,10 +1127,17 @@ function emitStoryStreaming(maintext: string) {
 
 function extractVisibleUserAction(prompt: string): string {
   const userTag = extractLastTag(prompt, 'user');
-  if (userTag) return userTag.trim();
+  if (userTag) {
+    return userTag
+      .split(/\r?\n/)
+      .filter(line => !/^\s*当前地点\s*[:：]/.test(line))
+      .join('\n')
+      .trim();
+  }
   const firstSection = prompt.split(/【叙述者权限边界】|【当前权威局势】|【本回合标准结算单】/)[0] ?? prompt;
   return firstSection
     .replace(/<\/?玩家本回合行动>/g, '')
+    .replace(/^\s*当前地点\s*[:：].*$/gm, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 1200);

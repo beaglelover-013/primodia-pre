@@ -111,7 +111,7 @@ function plantPlot(seed: InventoryItem) {
     game.pushLog('提示', result.message);
     return;
   }
-  game.appendDraft(`我在第${plot.id.slice(2)}号田畦播下「${seed.name}」，准备把它养成「${crop}」。预计${expectedHarvest}。（前端已结算：种子-1，田畦进入生长期。）`);
+  game.appendDraft(`我在第${plot.id.slice(2)}号田畦播下「${seed.name}」，准备把它养成「${crop}」。预计${expectedHarvest}。（前端已结算：种子-1，田畦进入生长期。）`, { type: 'FARM_PLANT' });
   game.pushLog('提示', `播种 · ${crop} 已结算并加入行动框。`);
   seedPicker.open = false;
 }
@@ -122,7 +122,7 @@ function expandPlot() {
     game.pushLog('提示', result.message);
     return;
   }
-  game.appendDraft('我在后院或当前农田空间开拓一块新田畦，清理土面、翻土并整理边界。（前端已结算：新增空畦。）');
+  game.appendDraft(`我在后院或当前农田空间开拓第${result.summary || game.farmPlots.length}号新田畦，清理土面、翻土并整理边界。（前端已结算：新增空畦。）`, { type: 'FARM_EXPAND' });
   game.pushLog('提示', '开拓新畦已结算并加入行动框。');
 }
 
@@ -132,7 +132,7 @@ function removePlot(plot: FarmPlot) {
     game.pushLog('提示', result.message);
     return;
   }
-  game.appendDraft(`我撤去第${plot.id.slice(2)}号田畦的「${plot.crop}」，整理土面和工具。（前端已结算：该空畦已撤去。）`);
+  game.appendDraft(`我撤去第${plot.id.slice(2)}号田畦的「${plot.crop}」，整理土面和工具。（前端已结算：该空畦已撤去。）`, { type: 'FARM_REMOVE' });
   game.pushLog('提示', `撤去田畦 · ${plot.crop} 已结算并加入行动框。`);
 }
 
@@ -154,7 +154,7 @@ function harvestPlot(plot: FarmPlot) {
     game.pushLog('提示', result.message);
     return;
   }
-  game.appendDraft(`我收成第${plot.id.slice(2)}号田畦的「${crop}」，分拣后以「${name}」记入库房，约${qty}份，风味倾向为${tags.join('、') || '普通'}。（前端已结算：收成入库，田畦清空。）`);
+  game.appendDraft(`我收成第${plot.id.slice(2)}号田畦的「${crop}」，分拣后以「${name}」记入库房，约${qty}份，风味倾向为${tags.join('、') || '普通'}。（前端已结算：收成入库，田畦清空。）`, { type: 'FARM_HARVEST' });
   game.pushLog('提示', `收成 · ${name} 已结算并加入行动框。`);
 }
 
@@ -195,7 +195,7 @@ function tapBrew(barrel: BrewBarrel) {
     return;
   }
   pendingEarlyTapId.value = '';
-  game.appendDraft(`我开启酒窖里的「${barrel.name}」桶，灌装约${bottles}瓶。当前判断：${quality}。（前端已结算：酒水已入库，酒桶已移除。）`);
+  game.appendDraft(`我开启酒窖里的「${barrel.name}」桶，灌装约${bottles}瓶。当前判断：${quality}。（前端已结算：酒水已入库，酒桶已移除。）`, { type: 'BREW_TAP' });
   game.pushLog('提示', `开桶灌装 · ${barrel.name} 已结算并加入行动框。`);
 }
 </script>

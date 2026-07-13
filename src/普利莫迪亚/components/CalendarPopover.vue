@@ -220,17 +220,18 @@ async function copyMemo(memo: PromiseMemo) {
   max-height: min(78vh, 720px);
   overflow: auto;
   padding: 14px;
-  color: var(--pm-dark-text);
+  color: var(--pm-ink);
   background:
-    linear-gradient(180deg, rgb(255, 248, 222), rgb(232, 207, 153)),
-    var(--pm-paper);
-  border: 1px solid rgba(94, 61, 24, 0.55);
+    radial-gradient(circle at 16% 8%, rgba(255, 255, 255, 0.22), transparent 34%),
+    linear-gradient(180deg, var(--pm-parch-bright), var(--pm-parch)),
+    var(--pm-paper-bg);
+  border: 1px solid var(--pm-line);
   border-radius: 8px;
   box-shadow:
     0 28px 70px rgba(0, 0, 0, 0.68),
-    0 0 0 1px rgba(255, 226, 151, 0.2),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
-    inset 0 0 42px rgba(117, 76, 22, 0.12);
+    0 0 0 1px color-mix(in srgb, var(--pm-gold) 20%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--pm-parch-bright) 74%, transparent),
+    inset 0 0 42px color-mix(in srgb, var(--pm-shadow-warm) 22%, transparent);
 }
 .calendar-popover::before {
   content: '';
@@ -238,7 +239,10 @@ async function copyMemo(memo: PromiseMemo) {
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background: rgb(244, 224, 177);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--pm-line-faint) 16%, transparent) 25%, transparent 25%) 0 0 / 12px 12px,
+    linear-gradient(225deg, color-mix(in srgb, var(--pm-line-faint) 12%, transparent) 25%, transparent 25%) 0 0 / 12px 12px,
+    var(--pm-parch);
 }
 .calendar-head {
   display: flex;
@@ -253,7 +257,7 @@ async function copyMemo(memo: PromiseMemo) {
   margin: 0;
 }
 .calendar-head p {
-  color: #8f5b17;
+  color: var(--pm-gold);
   font-size: calc(10px * var(--pm-text-scale));
   letter-spacing: 0.28em;
   font-weight: 800;
@@ -262,7 +266,7 @@ async function copyMemo(memo: PromiseMemo) {
   margin-top: 3px;
   font-family: var(--pm-font-display);
   font-size: calc(20px * var(--pm-text-scale));
-  color: #4d2f12;
+  color: var(--pm-ink);
   font-weight: 700;
 }
 .calendar-head > span {
@@ -283,28 +287,29 @@ async function copyMemo(memo: PromiseMemo) {
   min-height: 30px;
   place-items: center;
   gap: 1px;
-  color: #5c3a17;
-  background: rgb(230, 203, 139);
-  border: 1px solid rgba(105, 65, 22, 0.5);
+  color: var(--pm-ink);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pm-gold) 34%, var(--pm-parch-bright)), color-mix(in srgb, var(--pm-gold) 22%, var(--pm-parch)));
+  border: 1px solid color-mix(in srgb, var(--pm-line) 72%, transparent);
   border-radius: 5px;
   font-size: calc(12px * var(--pm-text-scale));
   font-weight: 700;
 }
 .calendar-weekday small {
-  color: #7b4810;
+  color: var(--pm-gold-dim);
   font-size: calc(10px * var(--pm-text-scale));
   font-weight: 800;
 }
 .calendar-weekday.market {
-  color: #5f3308;
-  background: rgb(226, 190, 105);
-  border-color: rgba(144, 82, 15, 0.65);
+  color: var(--pm-text-on-gold);
+  background: var(--pm-grad-gold);
+  border-color: color-mix(in srgb, var(--pm-gold-bright) 70%, transparent);
 }
 .calendar-blank {
   min-height: 54px;
-  border: 1px dashed rgba(119, 82, 32, 0.18);
+  border: 1px dashed var(--pm-line-faint);
   border-radius: 6px;
-  background: rgba(255, 252, 234, 0.45);
+  background: color-mix(in srgb, var(--pm-parch-bright) 42%, transparent);
 }
 .calendar-day {
   position: relative;
@@ -313,29 +318,36 @@ async function copyMemo(memo: PromiseMemo) {
   gap: 3px;
   min-height: 62px;
   padding: 8px;
-  color: #67431f;
-  background: rgb(255, 246, 211);
-  border: 1px solid rgba(119, 82, 32, 0.38);
+  color: var(--pm-ink-soft);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pm-parch-bright) 86%, white), var(--pm-parch));
+  border: 1px solid var(--pm-line-soft);
   border-radius: 6px;
   cursor: pointer;
   text-align: left;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.52);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--pm-parch-bright) 80%, transparent);
 }
 .calendar-day > span {
-  color: #8a6335;
+  color: var(--pm-ink-dim);
   font-weight: 650;
 }
 .calendar-day:hover,
 .calendar-day.selected {
   border-color: var(--pm-gold);
-  box-shadow: inset 0 0 0 1px rgba(197, 140, 37, 0.22);
+  background:
+    radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--pm-gold-bright) 24%, transparent), transparent 36%),
+    linear-gradient(180deg, color-mix(in srgb, var(--pm-gold) 20%, var(--pm-parch-bright)), var(--pm-parch));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--pm-gold) 30%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--pm-gold) 12%, transparent);
 }
 .calendar-day.today span {
-  color: #4b2807;
+  color: var(--pm-ink);
   font-weight: 800;
 }
 .calendar-day.market {
-  background: rgb(255, 241, 197);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pm-gold) 16%, var(--pm-parch-bright)), var(--pm-parch));
 }
 .calendar-day.has::after {
   content: '';
@@ -349,7 +361,7 @@ async function copyMemo(memo: PromiseMemo) {
 }
 .calendar-day.due {
   background:
-    linear-gradient(135deg, rgb(242, 180, 75), rgb(255, 239, 185));
+    linear-gradient(135deg, color-mix(in srgb, var(--pm-status-warn-bg) 70%, var(--pm-gold)), var(--pm-parch-bright));
 }
 .calendar-day em,
 .calendar-day b {
@@ -357,9 +369,9 @@ async function copyMemo(memo: PromiseMemo) {
   max-width: 100%;
   padding: 1px 5px;
   overflow: hidden;
-  color: #6d3d08;
-  background: rgb(255, 235, 178);
-  border: 1px solid rgba(137, 78, 12, 0.52);
+  color: var(--pm-gold-dim);
+  background: color-mix(in srgb, var(--pm-gold) 18%, var(--pm-parch-bright));
+  border: 1px solid color-mix(in srgb, var(--pm-gold) 48%, transparent);
   border-radius: 999px;
   font-size: calc(10px * var(--pm-text-scale));
   font-style: normal;
@@ -369,9 +381,9 @@ async function copyMemo(memo: PromiseMemo) {
   white-space: nowrap;
 }
 .calendar-day b {
-  color: #5b3b1a;
-  background: rgb(246, 226, 174);
-  border-color: rgba(103, 67, 31, 0.42);
+  color: var(--pm-ink-soft);
+  background: color-mix(in srgb, var(--pm-parch-bright) 72%, var(--pm-line-faint));
+  border-color: var(--pm-line-soft);
 }
 .calendar-day small {
   position: absolute;
@@ -396,14 +408,15 @@ async function copyMemo(memo: PromiseMemo) {
   gap: 8px;
   align-content: start;
   padding: 10px;
-  background: rgb(255, 244, 207);
-  border: 1px solid rgba(119, 82, 32, 0.32);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pm-parch-bright) 82%, transparent), color-mix(in srgb, var(--pm-parch) 88%, transparent));
+  border: 1px solid var(--pm-line-soft);
   border-radius: 6px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.36);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pm-parch-bright) 56%, transparent);
 }
 .calendar-panel h3 {
   margin: 0;
-  color: var(--pm-dark-text);
+  color: var(--pm-ink);
   font-size: calc(15px * var(--pm-text-scale));
 }
 .calendar-panel.warn {
@@ -413,7 +426,7 @@ async function copyMemo(memo: PromiseMemo) {
 .calendar-memo p,
 .calendar-mini p {
   margin: 0;
-  color: var(--pm-dark-muted);
+  color: var(--pm-ink-dim);
   line-height: 1.55;
 }
 .calendar-memo,
@@ -421,13 +434,13 @@ async function copyMemo(memo: PromiseMemo) {
   display: grid;
   gap: 6px;
   padding: 9px;
-  background: rgb(255, 252, 234);
-  border: 1px solid rgba(119, 82, 32, 0.28);
+  background: color-mix(in srgb, var(--pm-parch-bright) 68%, transparent);
+  border: 1px solid var(--pm-line-faint);
   border-radius: 5px;
 }
 .calendar-memo.due {
-  border-color: rgba(202, 139, 36, 0.65);
-  box-shadow: 0 0 0 1px rgba(202, 139, 36, 0.16);
+  border-color: color-mix(in srgb, var(--pm-gold) 68%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pm-gold) 18%, transparent);
 }
 .calendar-memo header {
   display: flex;
@@ -444,7 +457,7 @@ async function copyMemo(memo: PromiseMemo) {
 }
 .calendar-time,
 .calendar-mini span {
-  color: var(--pm-dark-faint);
+  color: var(--pm-ink-fade);
   font-size: calc(12px * var(--pm-text-scale));
 }
 .calendar-actions {
@@ -454,9 +467,9 @@ async function copyMemo(memo: PromiseMemo) {
 }
 .calendar-actions button {
   padding: 4px 9px;
-  color: var(--pm-dark-text);
-  background: rgb(255, 246, 214);
-  border: 1px solid rgba(119, 82, 32, 0.38);
+  color: var(--pm-ink);
+  background: color-mix(in srgb, var(--pm-parch-bright) 72%, transparent);
+  border: 1px solid var(--pm-line-soft);
   border-radius: 999px;
   cursor: pointer;
 }

@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
-import { useGameStore, formatCopper, type Heroine, type TavernRegion, type TavernRoom } from '../stores/game';
+import { useGameStore, formatCopper, type Heroine, type TavernRegion, type TavernRoom, type TemporaryStateDisplay } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 
 const game = useGameStore();
@@ -19,6 +19,14 @@ const tavernOverviewText = computed(() => {
   return names
     ? `${game.tavernName}当前已形成 ${regionList.value.length} 处可记录空间：${names}${regionList.value.length > 6 ? '等' : ''}。`
     : `${game.tavernName}的空间仍等待玩家在正文中整理、命名和拓展。`;
+});
+const tavernTemporaryStates = computed<TemporaryStateDisplay[]>(() =>
+  game.flattenTemporaryStates().filter(state => state.targetType === '酒馆'),
+);
+const selectedRegionTemporaryStates = computed<TemporaryStateDisplay[]>(() => {
+  const regionName = selectedRegion.value?.name;
+  if (!regionName) return [];
+  return game.flattenTemporaryStates().filter(state => state.targetType === '酒馆区域' && state.targetName === regionName);
 });
 
 const addOpen = ref(false);
@@ -213,7 +221,7 @@ function assignWorkerToRegion(r: TavernRegion) {
       <div class="head-actions">
         <div class="business-strip" :class="{ open: game.isBusinessOpen }">
           <span class="business-state">{{ game.isBusinessOpen ? '营业中' : '未营业' }}</span>
-          <span>{{ game.currentGuests }}/{{ game.guestCap }}</span>
+          <span title="普通客流占座">{{ game.currentGuests }}/{{ game.guestCap }}</span>
           <input
             class="guest-cap"
             type="number"
@@ -223,13 +231,13 @@ function assignWorkerToRegion(r: TavernRegion) {
             @change="updateGuestCap"
           />
           <label class="visitor-chance">
-            <span>来客率</span>
+            <span>互动访客率</span>
             <input
               type="number"
               min="0"
               max="100"
               :value="game.visitorChance"
-              title="每回合生成访客的概率"
+              title="每回合生成可互动访客的概率"
               @change="updateVisitorChance"
             />
             <span>%</span>
@@ -252,6 +260,21 @@ function assignWorkerToRegion(r: TavernRegion) {
           <div class="overview-kicker">当前酒馆概况</div>
           <p>{{ tavernOverviewText }}</p>
         </article>
+        <section v-if="tavernTemporaryStates.length" class="tavern-temp-board">
+          <div class="overview-kicker">当前经营效果</div>
+          <div class="temp-state-list">
+            <span
+              v-for="state in tavernTemporaryStates"
+              :key="`tavern-${state.名称}-${state.描述}`"
+              class="temp-state-chip"
+              :title="state.描述"
+            >
+              <strong>{{ state.名称 }}</strong>
+              <em>剩 {{ state.剩余回合 }} 回合</em>
+              <small v-if="state.来源物品">{{ state.来源物品 }}</small>
+            </span>
+          </div>
+        </section>
         <div v-if="manyRegions" class="region-overflow-note">
           空间记录已经很多了，可以在剧情里让角色整理、合并或重新命名区域，但不会阻止继续新增。
         </div>
@@ -285,10 +308,29 @@ function assignWorkerToRegion(r: TavernRegion) {
         </header>
 
         <p class="rg-desc">{{ selectedRegion.description }}</p>
+        <section v-if="selectedRegionTemporaryStates.length" class="region-temp-board">
+          <div class="rg-fac-title">区域临时效果</div>
+          <div class="temp-state-list">
+            <span
+              v-for="state in selectedRegionTemporaryStates"
+              :key="`region-${selectedRegion.id}-${state.名称}-${state.描述}`"
+              class="temp-state-chip"
+              :title="state.描述"
+            >
+              <strong>{{ state.名称 }}</strong>
+              <em>剩 {{ state.剩余回合 }} 回合</em>
+              <small v-if="state.来源物品">{{ state.来源物品 }}</small>
+            </span>
+          </div>
+        </section>
 
         <section v-if="game.lastVisitorSeed" class="visitor-note">
-          <span>最近访客</span>
+          <span>最近互动访客</span>
           <strong>{{ game.lastVisitorSeed }}</strong>
+        </section>
+        <section v-if="game.lastBackgroundFlow" class="visitor-note">
+          <span>最近普通客流</span>
+          <strong>{{ game.lastBackgroundFlow }}</strong>
         </section>
 
         <div class="rg-meta">
@@ -576,6 +618,59 @@ function assignWorkerToRegion(r: TavernRegion) {
   color: var(--pm-ink-soft);
   font-size: calc(13px * var(--pm-text-scale));
   line-height: 1.8;
+}
+.tavern-temp-board,
+.region-temp-board {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(153, 104, 44, 0.48);
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, rgba(255, 241, 202, 0.62), rgba(207, 168, 88, 0.24)),
+    rgba(255, 248, 226, 0.36);
+}
+.region-temp-board {
+  margin-top: -2px;
+}
+.temp-state-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.temp-state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid rgba(132, 84, 31, 0.48);
+  border-radius: 4px;
+  background: rgba(80, 52, 24, 0.1);
+  color: var(--pm-ink);
+  font-size: calc(12px * var(--pm-text-scale));
+  line-height: 1.4;
+}
+.temp-state-chip strong,
+.temp-state-chip em,
+.temp-state-chip small {
+  min-width: 0;
+}
+.temp-state-chip strong {
+  font-weight: 700;
+}
+.temp-state-chip em {
+  color: var(--pm-gold);
+  font-style: normal;
+  white-space: nowrap;
+}
+.temp-state-chip small {
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--pm-ink-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .region-overflow-note {
   padding: 8px 10px;

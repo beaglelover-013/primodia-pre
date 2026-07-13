@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import PmIcon from '../components/PmIcon.vue';
 import { useGameStore } from '../stores/game';
-import { buildFixedOpeningPreset } from '../services/openingWorkshop';
+import { buildFixedOpeningPreset, buildSheepOpeningPreset, buildSoloCookOpeningPreset } from '../services/openingWorkshop';
 
 const game = useGameStore();
 
@@ -11,6 +11,8 @@ const worldbookName = ref('');
 const loading = ref('');
 const notice = ref('');
 const error = ref('');
+const displayedProtagonistName = computed(() => game.currentHostPersonaName() || game.protagonist.name || '克斯');
+const displayedTavernName = computed(() => game.tavernName || '铁壶酒馆');
 
 const openings = computed(() => [
   {
@@ -18,24 +20,24 @@ const openings = computed(() => [
     title: '小狐狸来应聘',
     badge: '已完成',
     enabled: true,
-    summary: '清晨的铁壶酒馆还没正式营业，橘柒推门进来，问门口那句“招人”还算不算数。',
-    details: ['克斯', '铁壶酒馆', '橘柒', '共栖历1303年'],
+    summary: `清晨的${displayedTavernName.value}还没正式营业，橘柒推门进来，问门口那句“招人”还算不算数。`,
+    details: [displayedProtagonistName.value, displayedTavernName.value, '橘柒', '共栖历1303年'],
   },
   {
-    id: 'opening-2',
-    title: '第二个开场',
-    badge: '待加入',
-    enabled: false,
-    summary: '这里先留给你之后发来的第二套开场白、变量和人物设定。',
-    details: ['预留位置'],
+    id: 'sheep-brewer',
+    title: '小绵羊来访',
+    badge: '已完成',
+    enabled: true,
+    summary: `解冻月正午，酿造师公会学徒绵暖来到${displayedTavernName.value}，刚要自我介绍就被融雪风吹乱了开场。`,
+    details: [displayedProtagonistName.value, displayedTavernName.value, '绵暖', '酿造师公会'],
   },
   {
-    id: 'opening-3',
-    title: '第三个开场',
-    badge: '待加入',
-    enabled: false,
-    summary: '这里先留给你之后发来的第三套开场白、变量和人物设定。',
-    details: ['预留位置'],
+    id: 'solo-cook',
+    title: '单人开局',
+    badge: '已完成',
+    enabled: true,
+    summary: `没有任何女主相遇。${displayedProtagonistName.value}从睡梦中醒来，迎接${displayedTavernName.value}的新一天。`,
+    details: [displayedProtagonistName.value, displayedTavernName.value, '无女主相遇', '清晨醒来'],
   },
 ]);
 
@@ -47,20 +49,26 @@ function refreshWorldbooks() {
 async function chooseOpening(id: string) {
   error.value = '';
   notice.value = '';
-  if (id !== 'fox-applicant') {
-    notice.value = '这个开场还没有加入，等你给我第二、第三个内容后会放到这里。';
-    return;
-  }
   if (!worldbookName.value) {
     error.value = '请先选择要写入的世界书。';
     return;
   }
 
-  loading.value = '正在创建小狐狸开场';
+  const openingLabels: Record<string, string> = {
+    'fox-applicant': '小狐狸开场',
+    'sheep-brewer': '小绵羊开场',
+    'solo-cook': '单人开局',
+  };
+  loading.value = `正在创建${openingLabels[id] ?? '开场'}`;
   try {
-    const { draft, bundle } = buildFixedOpeningPreset(worldbookName.value);
+    const { draft, bundle } =
+      id === 'sheep-brewer'
+        ? buildSheepOpeningPreset(worldbookName.value)
+        : id === 'solo-cook'
+          ? buildSoloCookOpeningPreset(worldbookName.value)
+          : buildFixedOpeningPreset(worldbookName.value);
     await game.confirmOpeningWorkshop(draft, bundle);
-    notice.value = '小狐狸开场已创建，已经进入编年录。';
+    notice.value = `${openingLabels[id] ?? '开场'}已创建，已经进入编年录。`;
   } catch (err) {
     error.value = err instanceof Error ? err.message : '开场创建失败。';
   } finally {

@@ -29,6 +29,23 @@ const MoneyBucket = z.object({
   折算合计铜币: z.coerce.number().transform(value => Math.max(0, Math.floor(value))),
 });
 
+const TavernReputation = z.object({
+  数值: z.coerce.number().transform(value => _.clamp(Math.floor(value), 0, 9999)),
+  阶段: z.coerce.number().transform(value => _.clamp(Math.floor(value), 1, 5)),
+  名称: z.enum(['无人知晓', '略有耳闻', '小有名气', '远近闻名', '声名远扬']),
+  乘数: z.coerce.number().transform(value => Math.max(0, Number(value) || 0)),
+  范围: z.string(),
+});
+
+const ClockTime = z.preprocess(value => {
+  const text = String(value ?? '').trim();
+  const match = text.match(/(\d{1,2})\s*:\s*(\d{1,2})/);
+  if (!match) return '';
+  const hour = Math.max(0, Math.min(23, Math.floor(Number(match[1]) || 0)));
+  const minute = Math.max(0, Math.min(59, Math.floor(Number(match[2]) || 0)));
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}, z.string().regex(/^\d{2}:\d{2}$/));
+
 const InventoryBucket = z.object({
   食材: z.record(z.string().describe('食材名'), StorageItem).prefault({}),
   调料: z.record(z.string().describe('调料名'), StorageItem).prefault({}),
@@ -62,7 +79,7 @@ export const Schema = z.object({
       季节: z.enum(['隆冬', '冬末', '初春', '仲春', '暮春', '初夏', '盛夏', '暮夏', '初秋', '仲秋', '暮秋', '初冬']),
       日: z.coerce.number(),
       天气: z.string(),
-      时间: z.string(),
+      时间: ClockTime,
     }),
     当前地点: z.object({
       区域: z.string(),
@@ -73,7 +90,9 @@ export const Schema = z.object({
     名称: z.string(),
     所属领地: z.string(),
     所在城市: z.string(),
-    声望: z.coerce.number().transform(value => _.clamp(value, 0, 100)),
+    声望: TavernReputation,
+    声望值: z.coerce.number().transform(value => _.clamp(Math.floor(value), 0, 9999)),
+    声望名: z.enum(['无人知晓', '略有耳闻', '小有名气', '远近闻名', '声名远扬']),
     资金: z.object({
       随身钱袋: MoneyBucket,
       钱匣: MoneyBucket,
@@ -146,6 +165,13 @@ export const Schema = z.object({
     生命: StatBar,
     精力: StatBar,
     膀胱: StatBar,
+    个人资金: MoneyBucket,
+    收入: z.object({
+      职业: z.string(),
+      日收入折合铜币: z.coerce.number().transform(value => Math.max(0, Math.floor(value))),
+      结算方式: z.string(),
+      备注: z.string(),
+    }),
     备注: z.string(),
   })).prefault({}),
   农田与酒窖: z.object({

@@ -34,7 +34,6 @@ const visibleRecipes = computed(() => {
       recipe.name,
       recipe.outputName,
       recipe.outputCategory,
-      recipe.technique,
       ...recipe.outputTags,
       ...recipe.ingredients.flatMap(item => [item.name, item.category, ...item.tags]),
     ].join(' ').toLowerCase();
@@ -103,7 +102,7 @@ function recipeSummary(recipe: RecipeEntry) {
           <header class="recipe-card-head">
             <div>
               <h3>{{ recipe.name }}</h3>
-              <p>{{ modeLabels[recipe.mode] }} · {{ recipe.technique }} · {{ recipeSummary(recipe) }}</p>
+              <p>{{ modeLabels[recipe.mode] }} · {{ recipeSummary(recipe) }}</p>
             </div>
             <button class="pm-link danger" @click="game.deleteRecipe(recipe.id)">删除</button>
           </header>
@@ -113,6 +112,10 @@ function recipeSummary(recipe: RecipeEntry) {
             <span v-if="recipe.outputQuality" class="pm-tag">{{ recipe.outputQuality }}</span>
             <span class="pm-tag dim">产出 {{ recipe.yieldQty }} 份</span>
             <span class="pm-tag dim">{{ formatCopper(recipe.outputPriceCopper ?? 0) }}</span>
+          </div>
+
+          <div v-if="recipe.outputTags.length" class="recipe-tag-cloud">
+            <span v-for="tag in recipe.outputTags" :key="tag" class="pm-tag">{{ tag }}</span>
           </div>
 
           <p v-if="recipe.note" class="recipe-note">{{ recipe.note }}</p>
@@ -129,7 +132,10 @@ function recipeSummary(recipe: RecipeEntry) {
                 {{ ingredient.name }} × {{ ingredient.qty }}
                 <em>{{ ingredient.category }}</em>
               </span>
-              <small>{{ ingredient.tags.length ? ingredient.tags.join('、') : '无标签' }}</small>
+              <small v-if="!ingredient.tags.length">无标签</small>
+              <div v-else class="ingredient-tags">
+                <span v-for="tag in ingredient.tags" :key="tag" class="pm-tag dim">{{ tag }}</span>
+              </div>
             </div>
           </section>
 
@@ -231,6 +237,11 @@ function recipeSummary(recipe: RecipeEntry) {
   flex-wrap: wrap;
   gap: 5px;
 }
+.recipe-tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
 .recipe-note {
   padding: 8px 10px;
   border-left: 3px solid rgba(167, 121, 45, 0.62);
@@ -246,9 +257,9 @@ function recipeSummary(recipe: RecipeEntry) {
   font-size: calc(13px * var(--pm-text-scale));
 }
 .ingredient-line {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(160px, auto) minmax(0, 1fr);
+  align-items: start;
   gap: 10px;
   padding: 7px 9px;
   border: 1px solid rgba(110, 80, 34, 0.28);
@@ -264,6 +275,14 @@ function recipeSummary(recipe: RecipeEntry) {
 }
 .ingredient-line small {
   color: var(--pm-ink-dim);
+  text-align: right;
+}
+.ingredient-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
 }
 .ingredient-line.missing {
   border-color: var(--pm-status-bad-border);
@@ -302,6 +321,14 @@ function recipeSummary(recipe: RecipeEntry) {
   .recipe-filter {
     position: static;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ingredient-line {
+    grid-template-columns: 1fr;
+  }
+  .ingredient-line small,
+  .ingredient-tags {
+    justify-content: flex-start;
+    text-align: left;
   }
 }
 </style>

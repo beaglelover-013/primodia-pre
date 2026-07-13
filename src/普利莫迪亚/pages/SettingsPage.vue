@@ -289,6 +289,14 @@ async function updateNpcActivityKeepTurns(event: Event) {
   await game.setNpcActivityKeepTurns(Number((event.target as HTMLInputElement).value));
 }
 
+async function updateNpcActivityMinMinutes(event: Event) {
+  await game.setNpcActivityMinMinutes(Number((event.target as HTMLInputElement).value));
+}
+
+async function updateNpcActivityMinSuccessTurns(event: Event) {
+  await game.setNpcActivityMinSuccessTurns(Number((event.target as HTMLInputElement).value));
+}
+
 async function clearNpcActivityBinding() {
   await game.clearNpcActivityWorldbookBindings();
 }
@@ -737,13 +745,14 @@ async function importSaveFile(event: Event) {
       </section>
 
       <section v-show="activeSettingsSection === 'worldbook'" class="settings-card pm-card npc-activity-card">
-        <h3>后台行为库 · 世界书</h3>
+        <h3>伪活人化 · 行为来源</h3>
         <p class="pm-dim">
-          伪活人化只使用读取成功的 <code>&lt;PrimordiaNpcActivities&gt;</code> 世界书行为库；没有读到或格式报错时会保持关闭，不使用任何前端兜底行为。
+          伪活人化优先使用每个角色自己的行为库，并直接识别当前变量中的酒馆区域。全局
+          <code>&lt;PrimordiaNpcActivities&gt;</code> 行为库只是可选后备，不再是启动条件。
         </p>
         <div class="activity-status">
-          <span class="pm-tag" :class="game.npcActivityEnabled && game.npcActivityWorldbookLibrary ? 'good' : 'warn'">
-            {{ game.npcActivityEnabled && game.npcActivityWorldbookLibrary ? '伪活人化开启' : '伪活人化关闭' }}
+          <span class="pm-tag" :class="game.npcActivityEnabled ? 'good' : 'warn'">
+            {{ game.npcActivityEnabled ? '伪活人化开启' : '伪活人化关闭' }}
           </span>
           <span>{{ game.npcActivityWorldbookStatus }}</span>
         </div>
@@ -758,6 +767,32 @@ async function importSaveFile(event: Event) {
           <span v-for="item in npcActivityLibraryStats.regionBehaviorCounts" :key="item.region">
             {{ item.region }} {{ item.count }} 条
           </span>
+        </div>
+        <div class="activity-tuning-grid">
+          <label class="pm-field compact">
+            <span>触发冷却分钟</span>
+            <input
+              class="pm-input"
+              type="number"
+              min="0"
+              step="10"
+              :value="game.npcActivityMinMinutes"
+              @change="updateNpcActivityMinMinutes"
+            />
+            <small>距离上次刷新至少经过这么多游戏分钟才会尝试触发；默认 90，填 0 表示只看回合。</small>
+          </label>
+          <label class="pm-field compact">
+            <span>触发冷却正文回合</span>
+            <input
+              class="pm-input"
+              type="number"
+              min="0"
+              step="1"
+              :value="game.npcActivityMinSuccessTurns"
+              @change="updateNpcActivityMinSuccessTurns"
+            />
+            <small>距离上次刷新至少经过这么多个成功 AI 正文楼层；默认 2，填 0 表示只看时间。</small>
+          </label>
         </div>
         <label class="pm-field compact activity-keep-field">
           <span>动向保留回合数</span>
@@ -798,7 +833,7 @@ async function importSaveFile(event: Event) {
             <span>当前绑定 {{ game.npcActivityWorldbookBindings[0].worldbookName }} · uid {{ game.npcActivityWorldbookBindings[0].uid }}</span>
           </div>
           <div v-else class="activity-status mini">
-            <span>尚未绑定行为库条目。</span>
+              <span>未绑定全局后备行为库；个人角色行为仍可独立运行。</span>
           </div>
           <div class="card-actions">
             <button class="pm-btn sm" :class="{ ghost: game.npcActivityEnabled }" @click="toggleNpcActivityEnabled">
@@ -850,7 +885,7 @@ async function importSaveFile(event: Event) {
             <PmIcon name="scroll" :size="12" /> 复制格式模板
           </button>
         </div>
-        <p class="pm-dim">读取失败会关闭伪活人化并清空本次行为库缓存；模板只用于复制参考，不参与运行。</p>
+        <p class="pm-dim">全局后备库读取失败只会清空后备缓存，不会关闭个人角色伪活人化；模板只用于复制参考，不参与运行。</p>
       </section>
 
       <section v-show="activeSettingsSection === 'debug'" class="settings-card pm-card">
@@ -992,8 +1027,8 @@ async function importSaveFile(event: Event) {
           <button class="pm-btn sm" @click="game.dispatchAction({ type: 'DEBUG_STAT', stat: 'energy_full', reason: '调试 · 精力满' })">
             <PmIcon name="check" :size="12" /> 精力满
           </button>
-          <button class="pm-btn sm" @click="game.dispatchAction({ type: 'DEBUG_STAT', stat: 'reputation_delta', value: 5, reason: '调试 · 声望 +5' })">
-            <PmIcon name="heart" :size="12" /> 声望 +5
+          <button class="pm-btn sm" @click="game.dispatchAction({ type: 'DEBUG_STAT', stat: 'reputation_delta', value: 500, reason: '调试 · 声望 +500' })">
+            <PmIcon name="heart" :size="12" /> 声望 +500
           </button>
           <button class="pm-btn sm" @click="game.pushLog('叙事', '手动记录 · 普通访客抵达')">
             <PmIcon name="scroll" :size="12" /> 写入引擎记录
@@ -1293,6 +1328,12 @@ async function importSaveFile(event: Event) {
 .activity-status.mini {
   gap: 12px;
   color: var(--pm-ink-dim);
+}
+.activity-tuning-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
 }
 .activity-errors {
   display: grid;

@@ -8,10 +8,11 @@ const logsOpen = ref(false);
 const mobileDetailsOpen = ref(false);
 
 const visibleLogs = computed(() => game.engineLogs.slice(0, 12));
+const visibleDraftActions = computed(() => game.draftActions.filter(action => !action.hidden));
 const hasAttentionLog = computed(() => visibleLogs.value.some(log => log.tone === 'red' || log.tone === 'amber' || log.kind === '提示'));
 
-function clearDraft() {
-  game.clearDraftActions();
+async function clearDraft() {
+  await game.clearDraftActions();
   game.playerInput = '';
 }
 
@@ -102,8 +103,8 @@ function logTitle(log: EngineLog) {
         </button>
         <button v-if="game.draftActions.length || game.playerInput" id="dock-clear-draft" class="pm-link" @click="clearDraft">清空</button>
       </div>
-      <div id="dock-draft" class="draft-list" :class="{ empty: game.draftActions.length === 0 }">
-        <article v-for="action in game.draftActions" :key="action.id" class="draft-line">
+      <div id="dock-draft" class="draft-list" :class="{ empty: visibleDraftActions.length === 0 }">
+        <article v-for="action in visibleDraftActions" :key="action.id" class="draft-line">
           <span>{{ action.text }}</span>
           <button :disabled="game.isGenerating" title="删除并撤销这条行动" @click="game.removeDraftAction(action.id)">×</button>
         </article>

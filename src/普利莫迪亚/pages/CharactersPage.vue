@@ -28,6 +28,7 @@ import {
   wardrobeVisibleEntryName,
   type WardrobeLibrary,
 } from '../services/wardrobeWorldbook';
+import { isCharacterBehaviorEntryName } from '../services/characterBehaviorWorldbook';
 
 const game = useGameStore();
 const giftCosts = { 橙皮陈酿: 180, 泥金蜂蜜小罐: 1_500, 银烛台: 5_400 } as const;
@@ -41,6 +42,13 @@ const selectedId = computed({
 const selected = computed(() => visibleHeroines.value.find(h => h.id === selectedId.value) ?? visibleHeroines.value[0] ?? null);
 const selectedWorldbookBindings = computed(() => (selected.value ? (game.characterWorldbookBindings[selected.value.id] ?? []) : []));
 const selectedBehaviorLibrary = computed(() => (selected.value ? game.characterBehaviorLibraries[selected.value.id] ?? null : null));
+const selectedBehaviorBinding = computed(() =>
+  selectedWorldbookBindings.value.find(binding => {
+    const id = String(binding.id ?? '');
+    const label = String(binding.label ?? '');
+    return id.startsWith('character-behavior:') || isCharacterBehaviorEntryName(label) || label.includes('角色行为库');
+  }),
+);
 const pendingCharacterDelete = ref<Heroine | null>(null);
 const pendingBehaviorDelete = ref<{ id: string; behavior: string } | null>(null);
 const selectedBehaviorId = ref('');
@@ -288,6 +296,7 @@ watch(
 async function refreshBehaviorLibrary() {
   if (!selected.value) return;
   await game.loadCharacterBehaviorLibraryForHeroine(selected.value.id);
+  await refreshBoundWorldbookEntries();
 }
 
 async function addBehaviorLibraryItem() {
@@ -301,6 +310,7 @@ async function addBehaviorLibraryItem() {
   });
   behaviorText.value = '';
   behaviorFeel.value = '';
+  await refreshBoundWorldbookEntries();
 }
 
 async function createWardrobeForSelected() {
@@ -428,6 +438,7 @@ async function editBehaviorLibraryItem(item: { id: string; behavior: string; reg
     behavior: nextBehavior.trim() || item.behavior,
     protagonistFeel: nextFeel?.trim() ?? item.protagonistFeel,
   });
+  await refreshBoundWorldbookEntries();
 }
 
 async function deleteBehaviorLibraryItem(item: { id: string; behavior: string }) {
@@ -440,6 +451,7 @@ async function confirmDeleteBehaviorLibraryItem() {
   const target = pendingBehaviorDelete.value;
   pendingBehaviorDelete.value = null;
   await game.deleteCharacterBehavior(selected.value.id, target.id);
+  await refreshBoundWorldbookEntries();
 }
 
 function closeDeleteConfirm() {
@@ -671,6 +683,10 @@ async function createWorldbookEntryForSelected() {
           </div>
 
           <div class="char-notes">
+            <p>
+              <b>个人资金</b>{{ formatCopper(h.personalFundsCopper ?? 0) }} ·
+              {{ h.income?.职业 || h.title }}{{ h.income?.日收入折合铜币 ? ` · 日入${formatCopper(h.income.日收入折合铜币)}` : '' }}
+            </p>
             <p><b>一句话穿着</b>{{ h.outfit || '衣着暂未记录。' }}</p>
             <p><b>备注</b>{{ h.bio || '暂无备注。' }}</p>
           </div>
@@ -712,6 +728,8 @@ async function createWorldbookEntryForSelected() {
             <div class="selected-fields">
               <span><b>种族</b>{{ selected.race }}</span>
               <span><b>身份</b>{{ selected.title }}</span>
+              <span><b>个人资金</b>{{ formatCopper(selected.personalFundsCopper ?? 0) }}</span>
+              <span><b>收入</b>{{ selected.income?.职业 || selected.title }}{{ selected.income?.日收入折合铜币 ? ` · 日入${formatCopper(selected.income.日收入折合铜币)}` : '' }}</span>
               <span><b>好感</b>{{ selected.affection }}/{{ selected.affectionMax }}</span>
               <span><b>心情</b>{{ selected.mood }}</span>
               <span><b>所在位置</b>{{ selected.located }}</span>
@@ -749,6 +767,15 @@ async function createWorldbookEntryForSelected() {
             <p class="pm-dim">
               这里记录这个角色逐渐学会的习惯、职责和长期互动倾向。条目默认写入专属世界书，但不会直接启用进提示词。
             </p>
+            <div class="worldbook-meta">
+              个人行为库：
+              <span class="pm-tag" :class="selectedBehaviorBinding ? 'good' : 'warn'">
+                {{ selectedBehaviorBinding ? '已绑定' : '未绑定' }}
+              </span>
+              <span v-if="selectedBehaviorBinding">
+                {{ selectedBehaviorBinding.worldbookName }} · uid {{ selectedBehaviorBinding.uid }}
+              </span>
+            </div>
             <div class="card-actions behavior-actions">
               <button class="pm-btn sm ghost" @click="refreshBehaviorLibrary">
                 <PmIcon name="check" :size="12" /> 重新读取
