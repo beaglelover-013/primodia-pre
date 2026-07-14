@@ -23,6 +23,9 @@ import { tavernNpcActivityPools, tavernNpcConversationTopics, tavernNpcRestActiv
 
 const game = useGameStore();
 const tavernNameDraft = ref(game.tavernName);
+const tavernNameSaving = ref(false);
+const tavernNameNotice = ref('');
+const tavernNameError = ref('');
 const settingSections = [
   { id: 'play', label: '游玩辅助', desc: '约定 · 招牌 · 正文' },
   { id: 'worldbook', label: '世界书', desc: '发送包 · 天气 · 行为库' },
@@ -426,10 +429,23 @@ function runReadonlySelfCheck() {
   game.pushLog('系统', bad ? `只读自检完成 · ${bad} 项需要处理` : warn ? `只读自检完成 · ${warn} 项提示` : '只读自检完成 · 当前账本健康');
 }
 
-function saveTavernName() {
+async function saveTavernName() {
   const next = tavernNameDraft.value.trim();
   if (!next) return;
-  game.setTavernName(next);
+  tavernNameSaving.value = true;
+  tavernNameNotice.value = '';
+  tavernNameError.value = '';
+  try {
+    const ok = await game.setTavernName(next);
+    if (!ok) {
+      throw new Error('招牌已改到前端，但当前楼层变量写入失败。请确认酒馆助手变量接口可用后再保存一次。');
+    }
+    tavernNameNotice.value = '招牌已同步到当前楼层变量。';
+  } catch (error) {
+    tavernNameError.value = error instanceof Error ? error.message : '酒馆招牌保存失败。';
+  } finally {
+    tavernNameSaving.value = false;
+  }
 }
 
 function exportSave() {
@@ -545,11 +561,13 @@ async function importSaveFile(event: Event) {
           <input v-model="tavernNameDraft" class="pm-input" placeholder="给你的酒馆起个名字" @keyup.enter="saveTavernName" />
         </label>
         <div class="card-actions">
-          <button class="pm-btn sm" @click="saveTavernName">
-            <PmIcon name="check" :size="12" /> 挂上新招牌
+          <button class="pm-btn sm" :disabled="tavernNameSaving" @click="saveTavernName">
+            <PmIcon name="check" :size="12" /> {{ tavernNameSaving ? '保存中' : '挂上新招牌' }}
           </button>
         </div>
-        <p class="pm-dim">这里会同步到顶部位置、正文页和经营记录，不再强制叫铁壶酒馆。</p>
+        <p class="pm-dim">这里会同步到顶部位置、正文页、经营记录和当前楼层变量。</p>
+        <p v-if="tavernNameError" class="edit-error">{{ tavernNameError }}</p>
+        <p v-if="tavernNameNotice" class="edit-notice">{{ tavernNameNotice }}</p>
       </section>
 
       <section v-show="activeSettingsSection === 'display'" class="settings-card pm-card">
@@ -593,7 +611,6 @@ async function importSaveFile(event: Event) {
             </span>
           </button>
         </div>
-        <p class="pm-dim">主题只改变前端观感，不会写入 MVU 变量，也不会发送给 AI。</p>
       </section>
 
       <section v-show="activeSettingsSection === 'play'" class="settings-card pm-card">
@@ -1838,6 +1855,17 @@ async function importSaveFile(event: Event) {
 .promise-card p {
   margin: 6px 0 0;
   line-height: 1.55;
+}
+.edit-error,
+.edit-notice {
+  margin: 8px 0 0;
+  font-size: calc(12px * var(--pm-text-scale));
+}
+.edit-error {
+  color: #9b2c2c;
+}
+.edit-notice {
+  color: #2f7d52;
 }
 @media (max-width: 820px) {
   .settings-tabs {

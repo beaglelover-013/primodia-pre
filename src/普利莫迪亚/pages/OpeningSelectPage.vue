@@ -17,7 +17,7 @@ const displayedTavernName = computed(() => game.tavernName || '铁壶酒馆');
 const openings = computed(() => [
   {
     id: 'fox-applicant',
-    title: '小狐狸来应聘',
+    title: '橘柒来应聘',
     badge: '已完成',
     enabled: true,
     summary: `清晨的${displayedTavernName.value}还没正式营业，橘柒推门进来，问门口那句“招人”还算不算数。`,
@@ -25,7 +25,7 @@ const openings = computed(() => [
   },
   {
     id: 'sheep-brewer',
-    title: '小绵羊来访',
+    title: '绵暖来访',
     badge: '已完成',
     enabled: true,
     summary: `解冻月正午，酿造师公会学徒绵暖来到${displayedTavernName.value}，刚要自我介绍就被融雪风吹乱了开场。`,
@@ -55,8 +55,8 @@ async function chooseOpening(id: string) {
   }
 
   const openingLabels: Record<string, string> = {
-    'fox-applicant': '小狐狸开场',
-    'sheep-brewer': '小绵羊开场',
+    'fox-applicant': '橘柒开场',
+    'sheep-brewer': '绵暖开场',
     'solo-cook': '单人开局',
   };
   loading.value = `正在创建${openingLabels[id] ?? '开场'}`;
@@ -90,7 +90,7 @@ onMounted(refreshWorldbooks);
       <div>
         <p>OPENING</p>
         <h1><PmIcon name="ledger" :size="22" /> 开场选择</h1>
-        <span>先选一个开场进入故事。现在只有小狐狸开场可用，另外两个位置先留出来。</span>
+        <span>先选一个开场进入故事。现在只有橘柒开场可用，另外两个位置先留出来。</span>
       </div>
       <label class="worldbook-picker">
         <span>写入世界书</span>

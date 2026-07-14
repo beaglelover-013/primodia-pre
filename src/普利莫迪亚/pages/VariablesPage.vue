@@ -136,7 +136,10 @@ async function saveVariables() {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('变量必须是一整个 JSON 对象。');
     }
-    await game.setFrontendMvuData(parsed as Record<string, unknown>);
+    const ok = await game.setFrontendMvuData(parsed as Record<string, unknown>);
+    if (!ok) {
+      throw new Error('前端状态已更新，但当前楼层变量写入失败。请确认酒馆助手变量接口可用后再保存一次。');
+    }
     editNotice.value = '变量已保存到当前楼层。';
   } catch (error) {
     editError.value = error instanceof Error ? error.message : '变量 JSON 解析失败。';

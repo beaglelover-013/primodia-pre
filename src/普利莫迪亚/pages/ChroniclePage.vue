@@ -4,6 +4,8 @@ import { useGameStore, type InventoryItem, type PromiseMemo } from '../stores/ga
 import PmIcon from '../components/PmIcon.vue';
 import {
   findNearestShopBefore,
+  isFrontendLoaderMessage,
+  isSeparatorOnlyStoryText,
   loadAssistantStoryIndex,
   loadLatestAssistantMaintext,
   parseMaintext,
@@ -55,7 +57,7 @@ const storyParagraphs = computed(() =>
   latestMessage.value.maintext
     .split(/\n\s*\n/)
     .map(line => line.trim())
-    .filter(Boolean),
+    .filter(line => line && !isSeparatorOnlyStoryText(line)),
 );
 const parsedOptions = computed(() => latestMessage.value.options.slice(0, 4));
 const chapterMark = computed(() =>
@@ -197,6 +199,10 @@ function readUserMessageText(userMessageId?: number) {
   }
 }
 
+function isEditableTurnActionText(text: string) {
+  return Boolean(text.trim()) && !isFrontendLoaderMessage(text);
+}
+
 function readLatestUserMessageAfter(messageId?: number): { messageId: number; text: string } | null {
   if (!hasMessageId(messageId) || typeof getLastMessageId !== 'function' || typeof getChatMessages !== 'function') return null;
   const lastMessageId = getLastMessageId();
@@ -208,10 +214,13 @@ function readLatestUserMessageAfter(messageId?: number): { messageId: number; te
     ]
       .filter(message => typeof message?.message_id === 'number' && message.message_id > messageId)
       .sort((a, b) => a.message_id - b.message_id);
-    const latestUser = userMessages.at(-1);
-    if (!latestUser) return null;
-    const text = readUserMessageText(latestUser.message_id);
-    return text ? { messageId: latestUser.message_id, text } : null;
+    for (let index = userMessages.length - 1; index >= 0; index--) {
+      const latestUser = userMessages[index];
+      if (!latestUser) continue;
+      const text = readUserMessageText(latestUser.message_id);
+      if (isEditableTurnActionText(text)) return { messageId: latestUser.message_id, text };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -222,10 +231,11 @@ function refreshTurnAction() {
   const userMessageId = pendingUser?.messageId ?? latestMessage.value.userMessageId;
   const text = pendingUser?.text ?? readUserMessageText(userMessageId);
   const previousPendingId = pendingTurnActionMessageId.value;
-  visibleTurnActionMessageId.value = userMessageId;
+  const canEditText = isEditableTurnActionText(text);
+  visibleTurnActionMessageId.value = canEditText ? userMessageId : undefined;
   pendingTurnActionMessageId.value = pendingUser?.messageId;
-  turnActionText.value = text;
-  turnActionError.value = hasMessageId(userMessageId) && !turnActionText.value ? '未找到本回合行动记录。' : '';
+  turnActionText.value = canEditText ? text : '';
+  turnActionError.value = hasMessageId(userMessageId) && !turnActionText.value ? '未找到可编辑的本回合行动记录。' : '';
   if (pendingUser && previousPendingId !== pendingUser.messageId) turnActionOpen.value = true;
   if (!turnActionText.value) turnActionOpen.value = false;
 }
@@ -296,9 +306,9 @@ async function ensureLoadedBranchForAction(): Promise<boolean> {
   return true;
 }
 
-async function regenerateLatest(options: { authoritativeMessageId?: number } = {}) {
+async function regenerateLatest(options: { userMessageId?: number; authoritativeMessageId?: number; createUserMessage?: boolean } = {}) {
   const messageId = latestMessage.value.messageId;
-  const userMessageId = latestMessage.value.userMessageId;
+  const userMessageId = options.userMessageId ?? latestMessage.value.userMessageId;
   if (!hasMessageId(messageId) || !hasMessageId(userMessageId)) {
     game.pushLog('系统', '无法重 roll：缺少楼层信息。');
     closeContextMenu();
@@ -310,12 +320,16 @@ async function regenerateLatest(options: { authoritativeMessageId?: number } = {
     closeContextMenu();
     const userText = readUserMessageText(userMessageId);
     if (!userText) throw new Error('无法找到上一条玩家消息。');
+    if (!game.turnContextWorldbookReady) {
+      const ready = await game.ensureTurnContextWorldbook();
+      if (!ready) throw new Error('本回合发送包条目未绑定或写入失败，已停止生成。');
+    }
 
     const canPreserveScene =
       /动作类型:\s*CUSTOM_ACTION/.test(userText) ||
       (/自由行动造成的库存、状态或地点变化|若行动自然影响库存/.test(userText) && !userText.includes('前端已结算:'));
     const result = await runNarrativeRequest(userText, {
-      createUserMessage: false,
+      createUserMessage: options.createUserMessage ?? true,
       authoritativeData: game.getAuthoritativeMvuData(options.authoritativeMessageId ?? userMessageId),
       turnContextWorldbookBinding: game.turnContextWorldbookBinding,
       worldbookScanText: game.buildWorldbookScanPreview(),
@@ -361,7 +375,7 @@ function openEditTurnAction() {
     return;
   }
   const text = readUserMessageText(userMessageId);
-  if (!text) {
+  if (!isEditableTurnActionText(text)) {
     game.pushLog('系统', '无法编辑本回合行动：未找到玩家楼层内容。');
     return;
   }
@@ -386,7 +400,11 @@ async function saveTurnActionAndRegenerate() {
       refreshTurnAction();
       return;
     }
-    const regenerated = await regenerateLatest({ authoritativeMessageId: editing.userMessageId });
+    const regenerated = await regenerateLatest({
+      userMessageId: editing.userMessageId,
+      authoritativeMessageId: editing.userMessageId,
+      createUserMessage: true,
+    });
     if (!regenerated) {
       await writeUserMessageText(editing.userMessageId, editing.originalText, 'none');
       refreshTurnAction();

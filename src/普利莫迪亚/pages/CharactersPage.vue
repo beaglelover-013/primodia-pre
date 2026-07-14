@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { formatCopper, useGameStore, type Heroine, type TemporaryStateDisplay } from '../stores/game';
+import { formatCopper, useGameStore, type Heroine, type InventoryItem, type TemporaryStateDisplay } from '../stores/game';
 import PmIcon from '../components/PmIcon.vue';
 import {
   canCreateWorldbookEntry,
@@ -31,7 +31,6 @@ import {
 import { isCharacterBehaviorEntryName } from '../services/characterBehaviorWorldbook';
 
 const game = useGameStore();
-const giftCosts = { 橙皮陈酿: 180, 泥金蜂蜜小罐: 1_500, 银烛台: 5_400 } as const;
 
 const visibleHeroines = computed(() => game.heroines);
 
@@ -53,6 +52,41 @@ const pendingCharacterDelete = ref<Heroine | null>(null);
 const pendingBehaviorDelete = ref<{ id: string; behavior: string } | null>(null);
 const selectedBehaviorId = ref('');
 const cgRatingTab = ref<'sfw' | 'nsfw'>('sfw');
+interface PresetCgSlot {
+  title?: string;
+  url: string;
+  note?: string;
+  unlocked?: boolean;
+}
+const PRESET_CHARACTER_CG: Record<string, Partial<Record<'sfw' | 'nsfw', PresetCgSlot[]>>> = {
+  橘柒: {
+    sfw: [
+      {
+        title: 'CG 1',
+        url: 'https://files.catbox.moe/0ld4p2.png',
+        unlocked: true,
+        note: '固定开场立绘。',
+      },
+      {
+        title: 'CG 2',
+        url: 'https://files.catbox.moe/21zsbn.png',
+        unlocked: true,
+        note: '橘柒预设 CG。',
+      },
+    ],
+  },
+  绵暖: {
+    sfw: [
+      {
+        title: 'CG 1',
+        url: 'https://files.catbox.moe/j42erz.png',
+        unlocked: true,
+        note: '固定开场立绘。',
+      },
+    ],
+  },
+};
+const cgPreview = ref<{ title: string; url: string; note?: string } | null>(null);
 const selectedBehaviorGroups = computed(() => {
   const library = selectedBehaviorLibrary.value;
   if (!library) return [];
@@ -74,14 +108,29 @@ const selectedBehaviorItem = computed(() => {
 });
 const selectedCgSlots = computed(() => {
   if (!selected.value) return [];
-  return selected.value.cgSlots?.length
+  const baseSlots = selected.value.cgSlots?.length
     ? selected.value.cgSlots
     : Array.from({ length: 6 }, (_, idx) => ({
         id: `${selected.value?.id}-cg-${idx + 1}`,
         title: `CG ${idx + 1}`,
         unlocked: idx === 0,
+        rating: 'sfw' as const,
         note: '之后把图床链接填到角色数据的 url 字段。',
       }));
+  const presetBook = PRESET_CHARACTER_CG[selected.value.name] ?? {};
+  return baseSlots.map((slot, index) => {
+    const rating = (slot.rating ?? 'sfw') as 'sfw' | 'nsfw';
+    const preset = presetBook[rating]?.[index];
+    return {
+      ...slot,
+      rating,
+      title: preset?.title?.trim() || slot.title,
+      url: preset?.url?.trim() || slot.url,
+      unlocked: preset?.unlocked ?? slot.unlocked,
+      note: preset?.note?.trim() || slot.note,
+      slotIndex: index,
+    };
+  });
 });
 const visibleCgSlots = computed(() => selectedCgSlots.value.filter(item => (item.rating ?? 'sfw') === cgRatingTab.value));
 const selectedCgCounts = computed(() => ({
@@ -114,6 +163,11 @@ function aiStateLine(h: Heroine) {
   return `当前状态: 生命「${hpPhase(h)}」, 精力「${energyPhase(h)}」, 膀胱「${bladderPhase(h)}」。`;
 }
 
+function openCgPreview(cg: { title: string; url?: string; note?: string; unlocked?: boolean }) {
+  if (!cg.url || !cg.unlocked) return;
+  cgPreview.value = { title: cg.title, url: cg.url, note: cg.note };
+}
+
 /* 互动 */
 function startChat(h: Heroine) {
   game.appendDraft(`我去找${h.name}交谈，留意她此刻的表情、语气和身体状态。${aiStateLine(h)}`);
@@ -121,27 +175,34 @@ function startChat(h: Heroine) {
 }
 const giftOpen = ref(false);
 const giftTarget = ref<Heroine | null>(null);
+const giftInventoryItems = computed(() => game.inventory.filter(item => item.qty > 0));
+function giftAffectionGain(item: InventoryItem) {
+  const price = Math.max(0, Math.floor(Number(item.priceCopper) || 0));
+  const qualityBonus = item.quality && ['经典搭配', '绝佳搭配', '奇迹'].includes(item.quality) ? 2 : 0;
+  const categoryBonus = item.category === '成品' || item.category === '酒水' ? 1 : 0;
+  return Math.max(1, Math.min(8, 2 + Math.floor(price / 800) + qualityBonus + categoryBonus));
+}
 function openGift(h: Heroine) {
   giftTarget.value = h;
   giftOpen.value = true;
 }
-async function sendGift(item: '橙皮陈酿' | '泥金蜂蜜小罐' | '银烛台') {
+async function sendGift(item: InventoryItem) {
   if (!giftTarget.value) return;
   const h = giftTarget.value;
-  const cost = giftCosts[item];
-  const inc = Math.min(8, Math.floor(cost / 800) + 3);
+  const inc = giftAffectionGain(item);
   await game.executePseudoZeroAction({
     type: 'CHARACTER_GIFT',
     heroineId: h.id,
-    itemName: item,
-    costCopper: cost,
+    itemId: item.id,
+    itemName: item.name,
+    qty: 1,
     affectionGain: inc,
     stateLine: aiStateLine(h),
   }, {
     type: 'CHARACTER_GIFT',
     title: `赠礼 · ${h.name}`,
-    aiHint: `请承接当前位置和${h.name}当前状态, 叙述玩家送出「${item}」时她的反应。花费以前端结算为准；若礼物自然影响羁绊或状态, 请通过 MVU/变量体现。`,
-    logText: `CHARACTER_GIFT · ${h.name} · ${item}`,
+    aiHint: `请承接当前位置和${h.name}当前状态，叙述玩家从库房取出「${item.name}」送给她时的反应。库房扣除以前端结算为准；若礼物自然影响羁绊或状态，请通过 MVU/变量体现。`,
+    logText: `CHARACTER_GIFT · ${h.name} · ${item.name}`,
     autoSend: true,
   });
   giftOpen.value = false;
@@ -703,9 +764,6 @@ async function createWorldbookEntryForSelected() {
           </div>
 
           <footer class="char-acts">
-            <button class="pm-btn sm" @click.stop="startChat(h)">
-              <PmIcon name="chat" :size="12" /> 发起交谈
-            </button>
             <button class="pm-btn sm dark" @click.stop="openGift(h)">
               <PmIcon name="gift" :size="12" /> 赠送 / 投喂
             </button>
@@ -745,18 +803,7 @@ async function createWorldbookEntryForSelected() {
                 {{ state.名称 }} · {{ state.剩余回合 }}回合
               </span>
             </div>
-            <ol class="stage-list">
-              <li
-                v-for="(name, idx) in game.stageNames"
-                :key="name"
-                :class="{ done: idx + 1 < selected.stage, cur: idx + 1 === selected.stage }"
-              >
-                <span class="stage-idx">第{{ idx + 1 }}阶</span>
-                <span class="stage-name">{{ name }}</span>
-              </li>
-            </ol>
             <div class="pm-line"></div>
-            <div class="pm-dim">推荐: 关注精力, 适时赠送「{{ selected.gift ?? '一壶热茶' }}」推进。</div>
           </template>
           <div v-else class="pm-empty">点击左侧卡片选择一位角色, 查看专属阶段图谱。</div>
         </div>
@@ -941,14 +988,14 @@ async function createWorldbookEntryForSelected() {
             </button>
           </div>
           <div v-if="selected" class="cg-grid-side">
-            <article v-for="cg in visibleCgSlots" :key="cg.id" class="cg-slot" :class="{ locked: !cg.unlocked }">
-              <div class="cg-thumb">
+            <article v-for="cg in visibleCgSlots" :key="cg.id" class="cg-slot" :class="{ locked: !cg.unlocked, clickable: cg.url && cg.unlocked }">
+              <button class="cg-thumb" type="button" :disabled="!cg.url || !cg.unlocked" @click="openCgPreview(cg)">
                 <img v-if="cg.url" :src="cg.url" :alt="cg.title" />
                 <div v-else class="cg-placeholder">
                   <PmIcon name="flourish" :size="18" />
                   <span>{{ cg.unlocked ? '待填链接' : '未解锁' }}</span>
                 </div>
-              </div>
+              </button>
               <div class="cg-info">
                 <strong>{{ cg.title }}</strong>
                 <span>{{ cg.note ?? '图床链接可稍后补入。' }}</span>
@@ -970,6 +1017,21 @@ async function createWorldbookEntryForSelected() {
       </aside>
     </div>
 
+    <Teleport to="body">
+      <div v-if="cgPreview" class="cg-preview-mask" @click.self="cgPreview = null">
+        <figure class="cg-preview-panel">
+          <button class="pm-link cg-preview-close" type="button" @click="cgPreview = null">
+            <PmIcon name="x" :size="18" />
+          </button>
+          <img :src="cgPreview.url" :alt="cgPreview.title" />
+          <figcaption>
+            <strong>{{ cgPreview.title }}</strong>
+            <span v-if="cgPreview.note">{{ cgPreview.note }}</span>
+          </figcaption>
+        </figure>
+      </div>
+    </Teleport>
+
     <!-- 赠送模态 -->
     <Teleport to="body">
       <div v-if="giftOpen" class="pm-modal-mask" @click.self="giftOpen = false">
@@ -982,26 +1044,17 @@ async function createWorldbookEntryForSelected() {
             <p class="pm-dim">
               当前好感阶段 · {{ giftTarget?.stageName }} · 第 {{ giftTarget?.stage }} 阶段
             </p>
-            <div class="gift-grid">
-              <button class="gift-card" @click="sendGift('橙皮陈酿')">
-                <span class="gift-tag">温酒</span>
-                <span class="gift-name">橙皮陈酿</span>
-                <span class="gift-cost pm-num">{{ formatCopper(giftCosts.橙皮陈酿) }}</span>
-                <span class="gift-tip">日常关怀 · 羁绊 +3</span>
-              </button>
-              <button class="gift-card" @click="sendGift('泥金蜂蜜小罐')">
-                <span class="gift-tag">珍品</span>
-                <span class="gift-name">泥金蜂蜜小罐</span>
-                <span class="gift-cost pm-num">{{ formatCopper(giftCosts.泥金蜂蜜小罐) }}</span>
-                <span class="gift-tip">心动一瞬 · 羁绊 +5</span>
-              </button>
-              <button class="gift-card" @click="sendGift('银烛台')">
-                <span class="gift-tag">名贵</span>
-                <span class="gift-name">银烛台</span>
-                <span class="gift-cost pm-num">{{ formatCopper(giftCosts.银烛台) }}</span>
-                <span class="gift-tip">郑重承诺 · 羁绊 +8</span>
+            <div v-if="giftInventoryItems.length" class="gift-grid">
+              <button v-for="item in giftInventoryItems" :key="item.id" class="gift-card" @click="sendGift(item)">
+                <span class="gift-tag">{{ item.category }}</span>
+                <span class="gift-name">{{ item.name }}</span>
+                <span class="gift-cost pm-num">库存 ×{{ item.qty }}</span>
+                <span class="gift-tip">
+                  {{ item.quality ? `${item.quality} · ` : '' }}羁绊 +{{ giftAffectionGain(item) }}
+                </span>
               </button>
             </div>
+            <div v-else class="pm-empty mini">库房里暂时没有可赠送的物品。</div>
           </div>
           <footer class="pm-modal-foot">
             <button class="pm-btn ghost" @click="giftOpen = false">取消</button>
@@ -1430,39 +1483,6 @@ async function createWorldbookEntryForSelected() {
   gap: 6px;
   margin: -3px 0 10px;
 }
-.stage-list {
-  list-style: none;
-  padding: 0;
-  display: grid;
-  gap: 4px;
-  font-size: calc(11.5px * var(--pm-text-scale));
-}
-.stage-list li {
-  display: grid;
-  grid-template-columns: 50px 1fr;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 4px;
-  background: rgba(255, 245, 215, 0.32);
-  border: 1px solid rgba(110, 80, 34, 0.16);
-  color: var(--pm-ink-soft);
-}
-.stage-list li.done {
-  background: rgba(216, 230, 200, 0.55);
-  color: var(--pm-ink);
-}
-.stage-list li.cur {
-  background: linear-gradient(180deg, #f3da90, #c9a04a);
-  color: var(--pm-ink);
-  font-weight: 600;
-  box-shadow: inset 0 1px 0 rgba(255, 245, 215, 0.6);
-}
-.stage-idx {
-  font-family: var(--pm-font-num);
-  letter-spacing: 0.04em;
-}
-
 .here-list {
   list-style: none;
   padding: 0;
@@ -1539,16 +1559,28 @@ async function createWorldbookEntryForSelected() {
 }
 .cg-thumb {
   aspect-ratio: 4 / 3;
+  width: 100%;
+  border: 0;
+  padding: 0;
   display: grid;
   place-items: center;
   background: linear-gradient(180deg, rgba(43, 29, 16, 0.78), rgba(97, 70, 35, 0.7));
   color: var(--pm-parch-soft);
+  cursor: default;
+}
+.cg-slot.clickable .cg-thumb {
+  cursor: zoom-in;
+}
+.cg-slot.clickable .cg-thumb:hover img {
+  transform: scale(1.035);
+  filter: saturate(1.06) brightness(1.05);
 }
 .cg-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.18s ease, filter 0.18s ease;
 }
 .cg-placeholder {
   display: grid;
@@ -1570,6 +1602,60 @@ async function createWorldbookEntryForSelected() {
   color: var(--pm-ink-dim);
   font-size: calc(10.5px * var(--pm-text-scale));
   line-height: 1.45;
+}
+
+.cg-preview-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(20, 12, 7, 0.72);
+  backdrop-filter: blur(5px);
+}
+.cg-preview-panel {
+  position: relative;
+  width: min(86vw, 920px);
+  max-height: 88vh;
+  margin: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgba(228, 183, 82, 0.55);
+  border-radius: 8px;
+  background: rgba(36, 24, 14, 0.96);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+}
+.cg-preview-panel img {
+  width: 100%;
+  max-height: calc(88vh - 72px);
+  object-fit: contain;
+  background: rgba(12, 8, 5, 0.72);
+}
+.cg-preview-panel figcaption {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  color: var(--pm-parch);
+  background: linear-gradient(180deg, rgba(54, 34, 17, 0.92), rgba(33, 22, 13, 0.96));
+}
+.cg-preview-panel figcaption span {
+  color: rgba(245, 222, 172, 0.72);
+  font-size: calc(12px * var(--pm-text-scale));
+}
+.cg-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(23, 14, 8, 0.72);
+  color: var(--pm-parch);
 }
 
 .gift-grid {

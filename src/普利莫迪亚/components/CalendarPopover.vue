@@ -76,8 +76,18 @@ const selectedDayMemos = computed(() =>
     .sort((a, b) => a.trigger!.serialMinute - b.trigger!.serialMinute),
 );
 
+const selectedDayEvents = computed(() => game.calendarEventsForDay(game.calendar.monthIndex, selectedDay.value));
+
 function memosForDay(day: number) {
   return currentMonthMemos.value.filter(item => item.trigger?.day === day);
+}
+
+function eventsForDay(day: number) {
+  return game.calendarEventsForDay(game.calendar.monthIndex, day);
+}
+
+function calendarItemCount(day: number) {
+  return memosForDay(day).length + eventsForDay(day).length;
 }
 
 function isDayDue(day: number) {
@@ -151,7 +161,7 @@ async function copyMemo(memo: PromiseMemo) {
         :class="{
           today: day === game.calendar.day,
           selected: day === selectedDay,
-          has: memosForDay(day).length > 0,
+          has: calendarItemCount(day) > 0,
           due: isDayDue(day),
           market: isMarketDayOf(day),
         }"
@@ -160,15 +170,28 @@ async function copyMemo(memo: PromiseMemo) {
       >
         <span>{{ day }}</span>
         <em v-if="isMarketDayOf(day)">市日</em>
+        <em v-if="eventsForDay(day).length">{{ eventsForDay(day)[0].name }}</em>
         <b v-if="day === game.calendar.day && game.calendar.weather !== '未设天气'">{{ game.calendar.weather }}</b>
-        <small v-if="memosForDay(day).length">{{ memosForDay(day).length }}</small>
+        <small v-if="calendarItemCount(day)">{{ calendarItemCount(day) }}</small>
       </button>
     </div>
 
     <div class="calendar-panels">
       <section class="calendar-panel">
         <h3>第 {{ selectedDay }} 日 · {{ weekHeaders[weekIndexOf(selectedDay)] }}{{ isMarketDayOf(selectedDay) ? ' · 市日' : '' }}</h3>
-        <p v-if="!selectedDayMemos.length" class="calendar-empty">这一天暂无待处理约定。</p>
+        <p v-if="!selectedDayMemos.length && !selectedDayEvents.length" class="calendar-empty">这一天暂无待处理约定或日历事件。</p>
+        <article
+          v-for="event in selectedDayEvents"
+          :key="event.id"
+          class="calendar-memo festival"
+        >
+          <header>
+            <strong>{{ event.name }}</strong>
+            <span>{{ event.kind }}</span>
+          </header>
+          <p class="calendar-time">{{ game.months[event.monthIndex] }} 第{{ event.day }}日 · {{ event.source }}</p>
+          <p>{{ reminderPreview({ reminder: event.reminder, event: event.event } as PromiseMemo, 140) }}</p>
+        </article>
         <article
           v-for="item in selectedDayMemos"
           :key="item.memo.id"
@@ -441,6 +464,12 @@ async function copyMemo(memo: PromiseMemo) {
 .calendar-memo.due {
   border-color: color-mix(in srgb, var(--pm-gold) 68%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--pm-gold) 18%, transparent);
+}
+.calendar-memo.festival {
+  border-color: color-mix(in srgb, var(--pm-gold) 62%, transparent);
+  background:
+    radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--pm-gold-bright) 22%, transparent), transparent 42%),
+    color-mix(in srgb, var(--pm-parch-bright) 74%, transparent);
 }
 .calendar-memo header {
   display: flex;

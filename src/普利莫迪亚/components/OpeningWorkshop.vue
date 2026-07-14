@@ -7,6 +7,8 @@ import {
   OPENING_CHARACTER_TEMPLATE_ENTRY,
   OPENING_TAVERN_TEMPLATE_ENTRY,
   buildFixedOpeningPreset,
+  buildSheepOpeningPreset,
+  buildSoloCookOpeningPreset,
   type OpeningGeneratedProfile,
   type OpeningModuleChoice,
   type OpeningStoryDraft,
@@ -80,6 +82,36 @@ const genderCustomActive = ref(false);
 const standardGenderOptions = ['男', '女'] as const;
 const generatedDraftKey = ref('');
 const showOpeningAdvanced = ref(false);
+const customOpeningEnabled = false;
+const hoveredOpeningId = ref('');
+const displayedProtagonistName = computed(() => game.currentHostPersonaName() || game.protagonist.name || '克斯');
+const displayedTavernName = computed(() => game.tavernName || '铁壶酒馆');
+const fixedOpenings = computed(() => [
+  {
+    id: 'fox-applicant',
+    title: '橘柒来应聘',
+    badge: '固定开场',
+    image: 'https://files.catbox.moe/0ld4p2.png',
+    summary: `清晨的${displayedTavernName.value}还没正式营业，橘柒推门进来，问门口那句“招人”还算不算数。`,
+    details: [displayedProtagonistName.value, displayedTavernName.value, '橘柒', '共栖历1303年'],
+  },
+  {
+    id: 'sheep-brewer',
+    title: '绵暖来访',
+    badge: '固定开场',
+    image: 'https://files.catbox.moe/j42erz.png',
+    summary: `解冻月正午，酿造师公会学徒绵暖来到${displayedTavernName.value}，刚要自我介绍就被融雪风吹乱了开场。`,
+    details: [displayedProtagonistName.value, displayedTavernName.value, '绵暖', '阳光融雪'],
+  },
+  {
+    id: 'solo-cook',
+    title: '单人开局',
+    badge: '固定开场',
+    summary: `没有任何女主相遇。${displayedProtagonistName.value}从睡梦中醒来，迎接${displayedTavernName.value}的新一天。`,
+    details: [displayedProtagonistName.value, displayedTavernName.value, '无女主相遇', '清晨醒来'],
+  },
+]);
+const hoveredOpening = computed(() => fixedOpenings.value.find(item => item.id === hoveredOpeningId.value));
 
 const canConfirm = computed(() =>
   Boolean(
@@ -521,12 +553,27 @@ async function confirmOpening() {
 }
 
 async function confirmFixedOpening() {
+  await chooseFixedOpening('fox-applicant');
+}
+
+async function chooseFixedOpening(id: string) {
+  refreshWorldbooks();
   if (!world.worldbookName) {
-    error.value = '请先选择要写入的世界书。';
+    error.value = '没有找到可用的世界书，请先为当前角色卡绑定世界书。';
     return;
   }
-  const { draft, bundle } = buildFixedOpeningPreset(world.worldbookName);
-  const result = await runTask('正在使用固定开场白创建第 1 层', () =>
+  const openingLabels: Record<string, string> = {
+    'fox-applicant': '橘柒开场',
+    'sheep-brewer': '绵暖开场',
+    'solo-cook': '单人开局',
+  };
+  const { draft, bundle } =
+    id === 'sheep-brewer'
+      ? buildSheepOpeningPreset(world.worldbookName)
+      : id === 'solo-cook'
+        ? buildSoloCookOpeningPreset(world.worldbookName)
+        : buildFixedOpeningPreset(world.worldbookName);
+  const result = await runTask(`正在创建${openingLabels[id] ?? '固定开场'}`, () =>
     game.confirmOpeningWorkshop(draft, bundle),
   );
   if (result) {
@@ -536,7 +583,7 @@ async function confirmFixedOpening() {
       missingRegionEntries.value.length ? `未找到区域条目：${missingRegionEntries.value.join('、')}` : '',
       missingModules.length ? `未找到模块条目：${missingModules.join('、')}` : '',
     ].filter(Boolean);
-    notice.value = notes.length ? `固定开场白快速开局已完成；${notes.join('；')}。` : '固定开场白快速开局已完成。';
+    notice.value = notes.length ? `${openingLabels[id] ?? '固定开场'}已完成；${notes.join('；')}。` : `${openingLabels[id] ?? '固定开场'}已完成。`;
     game.closeOpeningWorkshop();
   }
 }
@@ -617,12 +664,63 @@ watch(
         <div class="title-line"></div>
         <div>
           <p>PRIMORDIA CHRONICLES</p>
-          <h1>开局登记簿</h1>
+          <h1>开场选择</h1>
         </div>
         <div class="title-line"></div>
       </header>
 
-      <section class="register-frame">
+      <div v-if="error" class="opening-alert bad">{{ error }}</div>
+      <div v-if="notice" class="opening-alert good">{{ notice }}</div>
+      <div v-if="loading" class="opening-alert">{{ loading }}...</div>
+
+      <section class="fixed-opening-board">
+        <div class="fixed-opening-grid">
+          <article
+            v-for="item in fixedOpenings"
+            :key="item.id"
+            class="fixed-opening-card"
+            :class="{ withImage: Boolean(item.image) }"
+            :style="item.image ? { '--opening-card-image': `url(${item.image})` } : undefined"
+            @mouseenter="hoveredOpeningId = item.id"
+            @mouseleave="hoveredOpeningId = ''"
+          >
+            <div class="fixed-card-top">
+              <span>{{ item.badge }}</span>
+              <PmIcon name="ledger" :size="18" />
+            </div>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.summary }}</p>
+            <div class="fixed-card-tags">
+              <span v-for="detail in item.details" :key="detail">{{ detail }}</span>
+            </div>
+            <button class="opening-btn hero" type="button" :disabled="!!loading" @click="chooseFixedOpening(item.id)">
+              使用这个开场
+            </button>
+          </article>
+        </div>
+      </section>
+
+      <Transition name="opening-preview">
+        <article
+          v-if="hoveredOpening"
+          class="fixed-opening-card opening-hover-preview"
+          :class="{ withImage: Boolean(hoveredOpening.image) }"
+          :style="hoveredOpening.image ? { '--opening-card-image': `url(${hoveredOpening.image})` } : undefined"
+          aria-hidden="true"
+        >
+          <div class="fixed-card-top">
+            <span>{{ hoveredOpening.badge }}</span>
+            <PmIcon name="ledger" :size="20" />
+          </div>
+          <h3>{{ hoveredOpening.title }}</h3>
+          <p>{{ hoveredOpening.summary }}</p>
+          <div class="fixed-card-tags">
+            <span v-for="detail in hoveredOpening.details" :key="detail">{{ detail }}</span>
+          </div>
+        </article>
+      </Transition>
+
+      <section v-if="customOpeningEnabled" class="register-frame">
         <aside class="register-side">
           <div class="seal">
             <PmIcon name="ledger" :size="34" />
@@ -1023,6 +1121,144 @@ watch(
 .title-line {
   height: 1px;
   background: linear-gradient(90deg, transparent, #c89a45, transparent);
+}
+
+.fixed-opening-board {
+  border: 1px solid rgba(213, 166, 82, 0.72);
+  border-radius: 18px 18px 6px 6px;
+  background: rgba(34, 29, 28, 0.84);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.45);
+  padding: 18px;
+}
+
+.fixed-opening-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.fixed-opening-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 280px;
+  border: 1px solid rgba(213, 166, 82, 0.34);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 248, 225, 0.09), rgba(90, 60, 26, 0.12));
+  padding: 18px;
+  overflow: hidden;
+}
+
+.fixed-opening-card.withImage {
+  background:
+    linear-gradient(180deg, rgba(20, 13, 10, 0.06), rgba(20, 13, 10, 0.34) 48%, rgba(20, 13, 10, 0.88)),
+    var(--opening-card-image) center 24% / cover no-repeat;
+}
+
+.fixed-opening-card.withImage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(20, 13, 10, 0.58), rgba(20, 13, 10, 0.12) 64%, rgba(20, 13, 10, 0.24)),
+    linear-gradient(180deg, transparent 30%, rgba(20, 13, 10, 0.82));
+  pointer-events: none;
+}
+
+.fixed-opening-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.fixed-opening-card.withImage h3,
+.fixed-opening-card.withImage p,
+.fixed-opening-card.withImage .fixed-card-top {
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.9);
+}
+
+.opening-hover-preview {
+  position: fixed;
+  z-index: 100;
+  top: 50%;
+  left: 50%;
+  width: min(520px, calc(100% - 36px));
+  min-height: 440px;
+  transform: translate(-50%, -50%);
+  border-color: rgba(244, 192, 95, 0.88);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.78);
+  pointer-events: none;
+}
+
+.opening-hover-preview.withImage {
+  background-position: center 18%;
+}
+
+.opening-hover-preview h3 {
+  margin-top: auto;
+  font-size: 30px;
+}
+
+.opening-hover-preview p {
+  flex: 0;
+  font-size: 17px;
+}
+
+.opening-preview-enter-active,
+.opening-preview-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
+}
+
+.opening-preview-enter-from,
+.opening-preview-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.9);
+}
+
+.fixed-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #d9b56e;
+}
+
+.fixed-card-top span {
+  border: 1px solid rgba(213, 166, 82, 0.38);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #f2d48a;
+  font-size: 12px;
+}
+
+.fixed-opening-card h3 {
+  margin: 0;
+  color: #fff9ed;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.fixed-opening-card p {
+  flex: 1;
+  margin: 0;
+  color: rgba(244, 233, 208, 0.74);
+  line-height: 1.75;
+}
+
+.fixed-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fixed-card-tags span {
+  border: 1px solid rgba(213, 166, 82, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 248, 225, 0.08);
+  padding: 4px 8px;
+  color: #f4e9d0;
+  font-size: 12px;
 }
 
 .register-frame {
@@ -1638,6 +1874,10 @@ label {
 }
 
 @media (max-width: 900px) {
+  .fixed-opening-grid {
+    grid-template-columns: 1fr;
+  }
+
   .register-frame {
     grid-template-columns: 1fr;
   }
@@ -1664,6 +1904,12 @@ label {
   .choice-tabs.vertical {
     display: flex;
     min-width: 0;
+  }
+}
+
+@media (hover: none) {
+  .opening-hover-preview {
+    display: none;
   }
 }
 </style>

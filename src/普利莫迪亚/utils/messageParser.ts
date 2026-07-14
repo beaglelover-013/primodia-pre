@@ -136,12 +136,20 @@ function stripFrontendPlaceholders(content: string): string {
   return content.replace(FRONTEND_PLACEHOLDER_PATTERN, '').trim();
 }
 
-function isFrontendLoaderMessage(content: string) {
+export function isFrontendLoaderMessage(content: string) {
   return FRONTEND_LOADER_MESSAGE_PATTERN.test(content);
 }
 
-function isSeparatorOnlyStoryText(content: string) {
+export function isSeparatorOnlyStoryText(content: string) {
   return content.replace(/[-—–_\s.。·・]+/g, '').length === 0;
+}
+
+function stripSeparatorOnlyParagraphs(content: string) {
+  return content
+    .split(/\n\s*\n/)
+    .map(line => line.trim())
+    .filter(line => line && !isSeparatorOnlyStoryText(line))
+    .join('\n\n');
 }
 
 function isUsableStoryText(content: string): boolean {
@@ -241,7 +249,8 @@ function findPreviousUserMessageId(messageId?: number): number | undefined {
   if (messageId === undefined || messageId === null || typeof getChatMessages !== 'function') return undefined;
   for (let id = messageId - 1; id >= 0; id--) {
     const userMessages = getChatMessages(id, { role: 'user' });
-    if (userMessages.length > 0) return userMessages[0].message_id;
+    const userMessage = userMessages.find(message => !isFrontendLoaderMessage(String(message?.message ?? '')));
+    if (userMessage) return userMessage.message_id;
   }
   return undefined;
 }
@@ -269,13 +278,13 @@ export function parseMaintext(messageContent: string): string {
   const maintext = extractLastTag(cleaned, 'maintext');
   const narrative = extractLastTag(cleaned, LEGACY_NARRATIVE_TAG);
   const body = maintext || narrative || cleaned;
-  return stripFrontendPlaceholders(stripHiddenStoryTags(body))
+  return stripSeparatorOnlyParagraphs(stripFrontendPlaceholders(stripHiddenStoryTags(body))
     .replace(/<NARRATIVE\b[^>]*>/gi, '')
     .replace(/<\/NARRATIVE>/gi, '')
     .replace(/<CONTEXT_conception\b[^>]*>[\s\S]*?<\/CONTEXT_conception>/gi, '')
     .replace(/<Analysis\b[^>]*>[\s\S]*?<\/Analysis>/gi, '')
     .replace(/<JSONPatch\b[^>]*>[\s\S]*?<\/JSONPatch>/gi, '')
-    .trim();
+    .trim());
 }
 
 export function parseSum(messageContent: string): string {

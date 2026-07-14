@@ -6,8 +6,8 @@ import Sidebar from './components/Sidebar.vue';
 import BottomDock from './components/BottomDock.vue';
 import PmIcon from './components/PmIcon.vue';
 import ServiceTray from './components/ServiceTray.vue';
+import OpeningWorkshop from './components/OpeningWorkshop.vue';
 
-import OpeningSelectPage from './pages/OpeningSelectPage.vue';
 import ChroniclePage from './pages/ChroniclePage.vue';
 import TavernPage from './pages/TavernPage.vue';
 import RegularGuestsPage from './pages/RegularGuestsPage.vue';
@@ -245,7 +245,7 @@ onUnmounted(() => {
 const tabComponent = computed(() => {
   switch (game.currentTab) {
     case 'opening':
-      return OpeningSelectPage;
+      return OpeningWorkshop;
     case 'chronicle':
       return ChroniclePage;
     case 'tavern':

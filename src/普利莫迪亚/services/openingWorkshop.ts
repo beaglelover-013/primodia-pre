@@ -1826,7 +1826,7 @@ export function buildSheepOpeningPreset(worldbookName = ''): {
   draft.tavern.story = '酿造师公会学徒绵暖背着木箱来到布拉姆维克村口的铁壶酒馆，还没来得及介绍自己，就被融雪午后的风吹乱了开场。';
   draft.tavern.funds = '6金币';
   draft.tavern.stock = '蔬菜和肉稍多';
-  draft.theme = '固定开场白：小绵羊酿造师公会来访';
+  draft.theme = '固定开场白：绵暖从酿造师公会来访';
 
   bundle.characterProfile.profile =
     '克斯，14岁，人类。刚接手布拉姆维克村口的铁壶酒馆，穿着洗得发白的亚麻短袖衫、深棕色粗布短裤和旧围裙，赤脚站在柜台后。开局时他被一位被风吹乱开场的酿造师公会学徒吸引了注意。';
@@ -1839,7 +1839,7 @@ export function buildSheepOpeningPreset(worldbookName = ''): {
   bundle.story.sum = '解冻月正午，酿造师公会学徒绵暖来到布拉姆维克的铁壶酒馆，刚要自我介绍就被融雪风吹乱，尴尬地和柜台后的克斯对上视线。';
 
   const initvar = bundle.story.initvar as Record<string, any>;
-  initvar.世界.当前历法.天气 = '解冻月晴朗正午，融雪反光强烈，泥路积水';
+  initvar.世界.当前历法.天气 = '阳光融雪';
   initvar.世界.当前历法.时间 = '12:20';
   initvar.酒馆.资金 = {
     随身钱袋: openingMoneyBucket(6000),

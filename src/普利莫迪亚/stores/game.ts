@@ -244,6 +244,34 @@ export interface PromiseMemo {
   triggeredAtTurn?: number;
 }
 
+export interface CalendarEvent {
+  id: string;
+  name: string;
+  kind: '节日' | '日历事件';
+  monthIndex: number;
+  day: number;
+  territories: string[];
+  source: string;
+  people: string[];
+  event: string;
+  reminder: string;
+}
+
+const FIXED_CALENDAR_EVENTS: CalendarEvent[] = [
+  {
+    id: 'vilane-weighing-day',
+    name: '称量日（秤日）',
+    kind: '节日',
+    monthIndex: 2,
+    day: 21,
+    territories: ['韦斯托利亚'],
+    source: '韦斯托利亚信徒生活',
+    people: ['维拉恩信徒', '衡序会祭司', '商贩', '债务相关者'],
+    event: '今日是韦斯托利亚的称量日。',
+    reminder: '今日是韦斯托利亚的称量日。',
+  },
+];
+
 export type CraftMode = 'cooking' | 'sauce' | 'drink';
 
 export interface RecipeIngredient {
@@ -319,6 +347,7 @@ export interface Heroine {
   title: string;
   stage: number;
   stageName: string;
+  stageNames?: string[];
   hp: number;
   hpMax: number;
   energy: number;
@@ -666,8 +695,9 @@ export type GameAction =
   | {
       type: 'CHARACTER_GIFT';
       heroineId: string;
+      itemId: string;
       itemName: string;
-      costCopper: number;
+      qty?: number;
       affectionGain: number;
       stateLine: string;
     }
@@ -1108,6 +1138,53 @@ function readCharacterIncome(record: Record<string, any>, fallbackTitle = ''): C
     结算方式: String(readFirstPath(income, ['结算方式', '结算', '周期', 'settlement'], '') || ''),
     备注: String(readFirstPath(income, ['备注', '说明', 'note'], '') || ''),
   };
+}
+
+function readCharacterCgSlots(record: Record<string, any>, heroineId: string, heroineName: string): CharacterCg[] | undefined {
+  const raw = readFirstPath<any>(record, ['CG收纳', 'CG', 'cgSlots', 'cg', '图片', '图册'], undefined);
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'object'
+      ? Object.entries(asRecord(raw)).map(([key, value]) => ({ key, value }))
+      : typeof raw === 'string'
+        ? raw
+            .split(/\r?\n|[、,，|;]/)
+            .map(value => value.trim())
+            .filter(Boolean)
+        : [];
+
+  const slots = list
+    .map((item, index) => {
+      const key = typeof item === 'object' && item && 'key' in item ? String((item as any).key) : '';
+      const value = typeof item === 'object' && item && 'value' in item ? (item as any).value : item;
+      const source = asRecord(value);
+      const url =
+        typeof value === 'string'
+          ? value.trim()
+          : String(readFirstPath(source, ['url', '链接', '地址', '图床链接', '图片地址', 'src'], '') || '').trim();
+      if (!url) return null;
+      const title = String(readFirstPath(source, ['title', '标题', '名称', 'name'], key || `CG ${index + 1}`) || `CG ${index + 1}`).trim();
+      const ratingText = String(readFirstPath(source, ['rating', '分区', '类型'], '') || '').toLowerCase();
+      const unlockedRaw = readFirstPath<any>(source, ['unlocked', '已解锁', '解锁'], undefined);
+      const unlocked =
+        unlockedRaw === undefined
+          ? true
+          : typeof unlockedRaw === 'boolean'
+            ? unlockedRaw
+            : !/false|0|否|未|锁/.test(String(unlockedRaw));
+      return {
+        id: String(readFirstPath(source, ['id'], `${heroineId || slugId(heroineName, 'heroine')}-cg-${index + 1}`) || `${heroineId}-cg-${index + 1}`),
+        title,
+        url,
+        unlocked,
+        rating: /nsfw|成人|私密|涩|色/.test(ratingText) ? 'nsfw' : 'sfw',
+        note: String(readFirstPath(source, ['note', '备注', '说明'], '') || ''),
+      } satisfies CharacterCg;
+    })
+    .filter((item): item is CharacterCg => Boolean(item));
+
+  return slots.length ? slots : undefined;
 }
 
 function slugId(input: string, fallback: string) {
@@ -1583,9 +1660,15 @@ export const useGameStore = defineStore('primordia', () => {
     return pool[seed % pool.length];
   }
 
+  function normalizeWeatherName(value: unknown) {
+    const text = String(value ?? '').trim();
+    if (!text) return '';
+    return text.split(/[：:。]/)[0]?.trim() || text;
+  }
+
   function applyWeatherEntry(entry: { name: string; description: string } | undefined, serialDay = currentCalendarDay()) {
     if (!entry) return false;
-    calendar.weather = entry.name;
+    calendar.weather = normalizeWeatherName(entry.name);
     calendar.weatherDescription = entry.description;
     calendar.weatherIcon = inferWeatherIcon(`${entry.name} ${entry.description}`);
     calendar.weatherDaySerial = serialDay;
@@ -3886,6 +3969,9 @@ export const useGameStore = defineStore('primordia', () => {
       sendWeatherToAi.value && weatherWorldbookLibrary.value && calendar.weather && calendar.weather !== '未设天气'
         ? `今日天气: ${calendar.weather}。${calendar.weatherDescription || '天气细节暂未记录。'}`
         : '';
+    const calendarEventLine = todayCalendarEvents().length
+      ? `今日日历事件:\n${todayCalendarEvents().map(event => `- ${event.name}`).join('\n')}`
+      : '';
     const relationLine = relationshipStateSummary();
     return [
       '完整正式变量树已附加在本层消息 data/stat_data；库存、农田、人物与酒馆结构以 stat_data 为准。商铺货架只读取本层 <shop> 临时块，不写入长期变量。',
@@ -3894,6 +3980,7 @@ export const useGameStore = defineStore('primordia', () => {
         ? '今日是市日：街坊、集市、摊位、临时货车与外来小贩更活跃；若本回合涉及采购或找店，商品来源与类型可以比平日更丰富。'
         : '',
       weatherLine,
+      calendarEventLine,
       `主角状态: ${protagonistStateSummary()}；当前状态「${protagonist.mood}」；所在位置「${protagonist.located}」；穿着「${protagonist.outfit}」。`,
       relationLine ? `配角状态:\n${relationLine}` : '',
       formatTemporaryStatePromptBlock(),
@@ -4543,9 +4630,55 @@ export const useGameStore = defineStore('primordia', () => {
     ].join('\n');
   }
 
+  function calendarTerritoryLabels() {
+    const locationRegionDetail = mapNodeDetails[location.region];
+    const locationPlaceDetail = mapNodeDetails[location.place];
+    const currentMapDetail = mapNodeDetails[currentMapId.value];
+    return [
+      openingSave.value?.region,
+      openingSave.value?.tavern?.territory,
+      location.region,
+      location.place,
+      currentMapId.value,
+      locationRegionDetail?.region,
+      locationRegionDetail?.faction,
+      locationPlaceDetail?.region,
+      locationPlaceDetail?.faction,
+      currentMapDetail?.region,
+      currentMapDetail?.faction,
+    ]
+      .map(value => String(value ?? '').trim())
+      .filter(Boolean);
+  }
+
+  function calendarEventMatchesTerritory(event: CalendarEvent) {
+    if (!event.territories.length) return true;
+    const labels = calendarTerritoryLabels();
+    return event.territories.some(territory => labels.some(label => label === territory || label.includes(territory)));
+  }
+
+  function calendarEventsForDay(monthIndex = calendar.monthIndex, day = calendar.day) {
+    return FIXED_CALENDAR_EVENTS.filter(
+      event => event.monthIndex === monthIndex && event.day === day && calendarEventMatchesTerritory(event),
+    );
+  }
+
+  function todayCalendarEvents() {
+    return calendarEventsForDay(calendar.monthIndex, calendar.day);
+  }
+
+  function formatTodayCalendarEventPromptBlock(events = todayCalendarEvents()) {
+    if (!events.length) return '';
+    return [
+      '【今日日历事件】',
+      ...events.map(event => `- ${event.reminder}`),
+      '这些是前端根据当前日期命中的日历事件；请作为当天背景和可触发素材自然承接，不要把本段标题或说明文字写进正文。',
+    ].join('\n');
+  }
+
   function appendDuePromiseMemoBlock(prompt: string, memos: PromiseMemo[]) {
-    const block = formatDuePromiseMemoPromptBlock(memos);
-    return block ? `${prompt}\n\n${block}` : prompt;
+    const blocks = [formatDuePromiseMemoPromptBlock(memos), formatTodayCalendarEventPromptBlock()].filter(Boolean);
+    return blocks.length ? `${prompt}\n\n${blocks.join('\n\n')}` : prompt;
   }
 
   function applyPromiseUpdates(updates: ParsedPromiseUpdate[] | undefined) {
@@ -5588,7 +5721,7 @@ export const useGameStore = defineStore('primordia', () => {
     calendar.day = snapshot.calendar.day;
     calendar.timeOfDay = snapshot.calendar.timeOfDay as TimeOfDay;
     calendar.clock = snapshot.calendar.clock;
-    calendar.weather = snapshot.calendar.weather;
+    calendar.weather = normalizeWeatherName(snapshot.calendar.weather);
     calendar.weatherIcon = snapshot.calendar.weatherIcon;
     calendar.weatherDescription = snapshot.calendar.weatherDescription ?? calendar.weatherDescription;
     calendar.weatherDaySerial = snapshot.calendar.weatherDaySerial ?? calendar.weatherDaySerial;
@@ -6208,21 +6341,19 @@ export const useGameStore = defineStore('primordia', () => {
   function resolveCharacterGift(action: Extract<GameAction, { type: 'CHARACTER_GIFT' }>): ActionResult {
     const heroine = heroines.value.find(item => item.id === action.heroineId);
     if (!heroine) return { ok: false, tone: 'red', message: '没有找到这位角色。' };
-    if (!canSpendCopper('wallet', action.costCopper)) {
-      return { ok: false, tone: 'red', message: `随身钱袋余额不足。本次需要 ${formatCopper(action.costCopper)}，当前只有 ${walletText.value}。` };
-    }
-    walletCopper.value = Math.max(0, walletCopper.value - action.costCopper);
+    const consumed = consumeItemFromSource('storage', action.itemId, action.qty ?? 1);
+    if (!consumed.ok) return { ok: false, tone: 'red', message: consumed.message };
     heroine.affection = Math.min(heroine.affectionMax, heroine.affection + action.affectionGain);
     markLocalStateDirty();
     void writeChatSave();
-    pushLog('结算', `赠送 ${heroine.name} ${action.itemName}，羁绊 +${action.affectionGain}，随身钱袋 -${formatCopper(action.costCopper)}。`);
+    pushLog('结算', `赠送 ${heroine.name} ${consumed.item.name} ×${consumed.qty}，羁绊 +${action.affectionGain}，库房已扣除。`);
     return {
       ok: true,
       tone: 'green',
-      message: `已把「${action.itemName}」送给 ${heroine.name}。`,
+      message: `已把「${consumed.item.name}」送给 ${heroine.name}。`,
       shouldAskAI: false,
-      paidCopper: action.costCopper,
-      narrativeFact: `当前位置为「${currentSceneLabel()}」。玩家把「${action.itemName}」郑重交给${heroine.name}，随身钱袋支出 ${formatCopper(action.costCopper)}，羁绊提升 ${action.affectionGain}。${action.stateLine}`,
+      inventoryChanges: [{ id: consumed.item.id, name: consumed.item.name, category: consumed.item.category, delta: -consumed.qty }],
+      narrativeFact: `当前位置为「${currentSceneLabel()}」。玩家从库房取出「${consumed.item.name}」×${consumed.qty}送给${heroine.name}，羁绊提升 ${action.affectionGain}。${action.stateLine}`,
       aiHint: '无需生成正文。',
     };
   }
@@ -6442,6 +6573,7 @@ export const useGameStore = defineStore('primordia', () => {
           身份: heroine.title,
           羁绊阶段: heroine.stage,
           阶段文字: heroine.stageName,
+          阶段列表: heroine.stageNames ?? stageNames,
           好感: heroine.affection,
           心情: heroine.mood,
           所在位置: heroine.located,
@@ -6495,7 +6627,7 @@ export const useGameStore = defineStore('primordia', () => {
           月份名: months[calendar.monthIndex] ?? '',
           季节: seasonText.value,
           日: calendar.day,
-          天气: calendar.weather,
+          天气: normalizeWeatherName(calendar.weather),
           时间: calendar.clock,
         },
         当前地点: {
@@ -7041,7 +7173,7 @@ export const useGameStore = defineStore('primordia', () => {
     calendar.day = normalized.calendar.day;
     calendar.timeOfDay = normalized.calendar.timeOfDay as TimeOfDay;
     calendar.clock = normalized.calendar.clock;
-    calendar.weather = normalized.calendar.weather;
+    calendar.weather = normalizeWeatherName(normalized.calendar.weather);
     calendar.weatherIcon = normalized.calendar.weatherIcon;
     calendar.weatherDescription = normalized.calendar.weatherDescription ?? '';
     calendar.weatherDaySerial = normalized.calendar.weatherDaySerial ?? 0;
@@ -7760,18 +7892,22 @@ export const useGameStore = defineStore('primordia', () => {
     return worldbookResult;
   }
 
-  function setTavernName(nextName: string) {
+  async function setTavernName(nextName: string) {
     const next = nextName.trim();
     if (!next) return false;
     tavernName.value = next;
+    const nextData = buildFrontendMvuSnapshot('手动修改酒馆招牌');
+    setPlainPath(nextData, '酒馆.名称', next);
+    applyMvuStatData(nextData, { restoreInventory: true });
+    const wroteMessage = await writeCurrentMessageStatData(nextData);
+    await writeChatSave();
     pushLog('系统', `酒馆招牌已改为「${next}」。`, {
       source: 'engine',
       authoritative: true,
-      tone: 'cyan',
+      tone: wroteMessage ? 'cyan' : 'amber',
       actionType: 'TAVERN_RENAME',
     });
-    void writeChatSave();
-    return true;
+    return wroteMessage;
   }
 
   function currentHostPersonaName() {
@@ -8443,6 +8579,20 @@ export const useGameStore = defineStore('primordia', () => {
       return Math.max(1, Math.min(stageNames.length, stage));
     };
     const stageNameFromStage = (stage: number, fallback = stageNames[0]) => stageNames[Math.max(0, Math.min(stageNames.length - 1, stage - 1))] ?? fallback;
+    const readStageNames = (record: Record<string, any>) => {
+      const raw = readFirstPath<any>(record, ['阶段列表', '阶段名称', '阶段名列表', '羁绊阶段名', '羁绊阶段名称', 'stageNames'], undefined);
+      const list = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object'
+          ? Object.values(raw)
+          : typeof raw === 'string'
+            ? raw.split(/[、,，/|;\n]+/)
+            : [];
+      const normalized = list.map(item => String(item ?? '').trim()).filter(Boolean);
+      return stageNames.map((fallback, index) => normalized[index] || fallback);
+    };
+    const stageNameFromList = (names: string[], stage: number, fallback = stageNameFromStage(stage)) =>
+      names[Math.max(0, Math.min(names.length - 1, stage - 1))] || fallback;
     const readGauge = (record: Record<string, any>, root: string, fallback: number) =>
       readNumberPath(record, [`${root}.当前值`, `${root}.value`, root], fallback) ?? fallback;
     const readGaugeMax = (record: Record<string, any>, root: string, fallback: number) =>
@@ -8459,17 +8609,20 @@ export const useGameStore = defineStore('primordia', () => {
       const hasEnoughIdentity = Boolean(raceText && titleText && (locatedText || outfitText));
       if (!hasEnoughIdentity) return;
       const stage = normalizeStage(readNumberPath(record, ['羁绊阶段', '阶段', 'stage'], 1), 1);
+      const personalStageNames = readStageNames(record);
       const hpMax = readGaugeMax(record, '生命', 100);
       const energyMax = readGaugeMax(record, '精力', 100);
       const bladderMax = readGaugeMax(record, '膀胱', 100);
       const affectionMax = readGaugeMax(record, '好感', 100);
+      const heroineId = slugId(rawName || key, `heroine-${heroines.value.length + 1}`);
       heroines.value.push({
-        id: slugId(rawName || key, `heroine-${heroines.value.length + 1}`),
+        id: heroineId,
         name: rawName,
         race: raceText,
         title: titleText,
         stage,
-        stageName: String(readFirstPath(record, ['阶段文字', '阶段名', 'stageName'], stageNameFromStage(stage)) || stageNameFromStage(stage)),
+        stageName: String(readFirstPath(record, ['阶段文字', '阶段名', 'stageName'], stageNameFromList(personalStageNames, stage)) || stageNameFromList(personalStageNames, stage)),
+        stageNames: personalStageNames,
         hp: Math.max(0, Math.min(hpMax, Math.floor(readGauge(record, '生命', hpMax)))),
         hpMax,
         energy: Math.max(0, Math.min(energyMax, Math.floor(readGauge(record, '精力', energyMax)))),
@@ -8487,6 +8640,7 @@ export const useGameStore = defineStore('primordia', () => {
         income: readCharacterIncome(record, titleText),
         portraitColor: heroinePortraitColors[index % heroinePortraitColors.length],
         bio: String(readFirstPath(record, ['备注', '描述', 'bio'], '') || ''),
+        cgSlots: readCharacterCgSlots(record, heroineId, rawName),
       });
       changed = true;
     });
@@ -8507,10 +8661,19 @@ export const useGameStore = defineStore('primordia', () => {
         changed = true;
       }
 
+      const personalStageNames = readStageNames(record);
+      if (personalStageNames.join('|') !== (heroine.stageNames ?? stageNames).join('|')) {
+        heroine.stageNames = personalStageNames;
+        changed = true;
+      }
+
       const stage = readNumberPath(record, ['羁绊阶段', '阶段', 'stage'], undefined);
       if (stage !== undefined) {
         heroine.stage = normalizeStage(stage, heroine.stage);
-        heroine.stageName = String(readFirstPath(record, ['阶段文字', '阶段名', 'stageName'], stageNameFromStage(heroine.stage, heroine.stageName)) || heroine.stageName);
+        heroine.stageName = String(
+          readFirstPath(record, ['阶段文字', '阶段名', 'stageName'], stageNameFromList(heroine.stageNames ?? stageNames, heroine.stage, heroine.stageName)) ||
+            heroine.stageName,
+        );
         changed = true;
       }
 
@@ -8602,6 +8765,12 @@ export const useGameStore = defineStore('primordia', () => {
       const bio = String(readFirstPath(record, ['备注', '描述', 'bio'], '') || '').trim();
       if (bio) {
         heroine.bio = bio;
+        changed = true;
+      }
+
+      const cgSlots = readCharacterCgSlots(record, heroine.id, heroine.name);
+      if (cgSlots && JSON.stringify(cgSlots) !== JSON.stringify(heroine.cgSlots ?? [])) {
+        heroine.cgSlots = cgSlots;
         changed = true;
       }
     });
@@ -8910,7 +9079,7 @@ export const useGameStore = defineStore('primordia', () => {
       tone: wroteMessage ? 'cyan' : 'amber',
       actionType: 'VARIABLE_EDIT',
     });
-    return true;
+    return wroteMessage;
   }
 
   async function deleteHeroine(heroineId: string) {
@@ -8947,7 +9116,7 @@ export const useGameStore = defineStore('primordia', () => {
       tone: wroteMessage ? 'cyan' : 'amber',
       actionType: 'VARIABLE_EDIT',
     });
-    return true;
+    return wroteMessage;
   }
 
   async function cleanupLegacyCharacterAlias() {
@@ -9774,6 +9943,8 @@ export const useGameStore = defineStore('primordia', () => {
     flattenTemporaryStates,
     promiseMemos,
     isPromiseMemoDue,
+    calendarEventsForDay,
+    todayCalendarEvents,
     updatePromiseMemoStatus,
     recipes,
     heroines,
