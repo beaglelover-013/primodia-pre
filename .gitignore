@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 node_modules/
 .pnpm-store/
 .pnpm/
@@ -5,3 +6,18 @@ node_modules/
 .cache/
 *.log
 dist/**/*.map
+=======
+node_modules
+
+.DS_Store
+Thumbs.db
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+auto-imports.d.ts
+components.d.ts
+>>>>>>> b6c722413d8cfdaf014bbb3f87518fd8c19754be
