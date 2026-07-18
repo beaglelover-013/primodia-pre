@@ -276,6 +276,13 @@ const sizePx = computed(() => (typeof props.size === 'number' ? `${props.size}px
       <path d="M4 12l5 5L20 6" />
     </template>
 
+    <!-- 刷新 / 重新扫描 -->
+    <template v-else-if="name === 'refresh'">
+      <path d="M20 6v5h-5" />
+      <path d="M4 18v-5h5" />
+      <path d="M18.5 10A7 7 0 0 0 6.4 6.4L4 9" />
+      <path d="M5.5 14a7 7 0 0 0 12.1 3.6L20 15" />
+    </template>
     <!-- 风格符号: 角花 -->
     <template v-else-if="name === 'flourish'">
       <path d="M2 12c4 0 4-4 8-4s4 4 8 4 4-4 4-4" />

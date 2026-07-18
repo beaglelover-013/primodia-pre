@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 普利莫迪亚编年录主状态。
  * 前端负责读取酒馆变量、保存本局状态、结算硬规则，并把权威局势交给 AI 叙述。
  */
@@ -99,14 +99,28 @@ import {
   type GuestUpdateStatus,
   type ParsedCraftResult,
   type ParsedCharacterBehaviorUpdate,
+  type ParsedBusinessAgreementUpdate,
   type ParsedGuestUpdate,
   type ParsedPromiseUpdate,
   type ParsedRegularGuestUpdate,
   type ParsedShop,
+  type ParsedTavernStateUpdate,
+  type LatestMaintextPayload,
   type StoryIndexItem,
 } from '../utils/messageParser';
 
 /* ---------- 常量与类型 ---------- */
+export type CapturedFormatTarget =
+  | 'all'
+  | 'shop'
+  | 'craft'
+  | 'guest'
+  | 'regularGuest'
+  | 'promise'
+  | 'tavernState'
+  | 'businessAgreement'
+  | 'characterBehavior';
+
 export const COIN_PER_SILVER = 100;
 export const SILVER_PER_GOLD = 10;
 export const GOLD_PER_PLATINUM = 500;
@@ -216,6 +230,7 @@ export interface TemporaryState {
   剩余回合: number;
   描述: string;
   来源物品?: string;
+  维持项ID?: string;
 }
 
 export interface TemporaryStateTree {
@@ -299,6 +314,61 @@ export interface RecipeEntry extends RecipeSource {
   createdAt: number;
   updatedAt: number;
   note?: string;
+}
+
+export interface TavernStateFormula {
+  id: string;
+  name: string;
+  targetRegion: string;
+  requirements: RecipeIngredient[];
+  description: string;
+  guestResponseHint: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TavernMaintenanceEntry {
+  id: string;
+  formulaId: string;
+  enabled: boolean;
+  status: 'active' | 'shortage' | 'disabled';
+  lastSettledTurn?: number;
+  pauseReason?: string;
+}
+
+export interface BusinessAgreementInventoryChange {
+  name: string;
+  category: InventoryItem['category'];
+  qty: number;
+  tags: string[];
+}
+
+export interface BusinessAgreement {
+  id: string;
+  kind: 'wage' | 'rent' | 'delivery' | 'sideBusiness';
+  name: string;
+  counterparty: string;
+  enabled: boolean;
+  cadence: 'daily';
+  cashboxDeltaCopper: number;
+  inventoryChanges: BusinessAgreementInventoryChange[];
+  reminder: string;
+  nextDueDaySerial: number;
+  lastSettledDaySerial?: number;
+}
+
+export interface BusinessSettlementRecord {
+  id: string;
+  sourceType: 'maintenance' | 'agreement';
+  sourceId: string;
+  turn: number;
+  daySerial: number;
+  status: 'success' | 'skipped';
+  moneyDeltaCopper: number;
+  inventoryChanges: BusinessAgreementInventoryChange[];
+  text: string;
+  createdAt: number;
+  occurrences?: number;
 }
 
 export interface CharacterCg {
@@ -450,6 +520,7 @@ export type TabId =
   | 'opening'
   | 'chronicle'
   | 'tavern'
+  | 'operations'
   | 'regularGuests'
   | 'protagonist'
   | 'inventory'
@@ -532,6 +603,13 @@ export interface DraftAction {
   hidden?: boolean;
   aiHint?: string;
   settledFact?: string;
+  stateDiscovery?: {
+    itemName: string;
+    category: InventoryItem['category'];
+    tags: string[];
+    qty: number;
+    targetRegion: string;
+  };
 }
 
 export interface GuestGroup {
@@ -929,6 +1007,10 @@ interface PrimordiaSaveBody {
   temporaryStates?: TemporaryStateTree;
   promiseMemos?: PromiseMemo[];
   recipes?: RecipeEntry[];
+  tavernStateFormulas?: TavernStateFormula[];
+  tavernMaintenance?: TavernMaintenanceEntry[];
+  businessAgreements?: BusinessAgreement[];
+  businessSettlementRecords?: BusinessSettlementRecord[];
   engineLogs: EngineLog[];
   generatedShop: StreetShop | null;
   generatedShopProducts: ShopProduct[];
@@ -985,6 +1067,10 @@ interface LocalSettlementSnapshot {
   temporaryStates: TemporaryStateTree;
   promiseMemos: PromiseMemo[];
   recipes: RecipeEntry[];
+  tavernStateFormulas: TavernStateFormula[];
+  tavernMaintenance: TavernMaintenanceEntry[];
+  businessAgreements: BusinessAgreement[];
+  businessSettlementRecords: BusinessSettlementRecord[];
   generatedShop: StreetShop | null;
   generatedShopProducts: ShopProduct[];
   farmPlots: FarmPlot[];
@@ -1277,8 +1363,9 @@ function ensureTavernRegionFromMvuName(regionList: TavernRegion[], regionName: s
   return region;
 }
 
-function normalizeInventoryCategory(value: string): InventoryItem['category'] {
-  if (['食材', '调料', '成品', '杂物', '酒水'].includes(value)) return value as InventoryItem['category'];
+function normalizeInventoryCategory(value: unknown): InventoryItem['category'] {
+  const text = String(value || '').trim();
+  if (['食材', '调料', '成品', '杂物', '酒水'].includes(text)) return text as InventoryItem['category'];
   return '杂物';
 }
 
@@ -1556,8 +1643,17 @@ function buildOpeningFingerprint(parts: Array<unknown>) {
 /* ---------- 常量与类型 ---------- */
 type TimeOfDay = '拂晓' | '清晨' | '上午' | '正午' | '午后' | '黄昏' | '入夜' | '深夜';
 
+function normalizeClockText(value: unknown, fallback = '00:00') {
+  const match = String(value ?? '').match(/([01]?\d|2[0-3])\s*[:：]\s*([0-5]?\d)/);
+  if (!match) return fallback;
+  const hour = Math.max(0, Math.min(23, Math.floor(Number(match[1]) || 0)));
+  const minute = Math.max(0, Math.min(59, Math.floor(Number(match[2]) || 0)));
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
 function timeOfDayFromClock(clock: string): TimeOfDay | undefined {
-  const hour = Number(clock.match(/^(\d{1,2})/)?.[1]);
+  const normalizedClock = normalizeClockText(clock, '');
+  const hour = Number(normalizedClock.match(/^(\d{1,2})/)?.[1]);
   if (!Number.isFinite(hour)) return undefined;
   const normalizedHour = ((Math.floor(hour) % 24) + 24) % 24;
   if (normalizedHour < 3) return '深夜';
@@ -1689,15 +1785,37 @@ export const useGameStore = defineStore('primordia', () => {
     if (!applyWeatherEntry(pickWeatherFromPool(currentWeatherPool(), today), today)) clearWeatherForDay(today);
   }
 
-  function rerollTodayWeather() {
+  function statDataWithCurrentCalendar(statData: PrimordiaStatData) {
+    const next = clonePlainData(statData);
+    setPlainPath(next, '世界.当前历法.年', calendar.year);
+    setPlainPath(next, '世界.当前历法.月份序号', calendar.monthIndex + 1);
+    setPlainPath(next, '世界.当前历法.月份名', months[calendar.monthIndex] ?? '');
+    setPlainPath(next, '世界.当前历法.季节', seasonText.value);
+    setPlainPath(next, '世界.当前历法.日', calendar.day);
+    setPlainPath(next, '世界.当前历法.天气', normalizeWeatherName(calendar.weather));
+    setPlainPath(next, '世界.当前历法.时间', normalizeClockText(calendar.clock, '00:00'));
+    return next;
+  }
+
+  async function syncCurrentCalendarToMessageStatData(reason = '前端日历同步') {
+    const baseData = readMessageStatData() ?? buildFrontendMvuSnapshot(reason);
+    return await writeCurrentMessageStatData(statDataWithCurrentCalendar(baseData));
+  }
+
+  async function rerollTodayWeather() {
     const ok = applyWeatherEntry(pickWeatherFromPool(currentWeatherPool(), currentCalendarDay(), true), currentCalendarDay());
     if (!ok) {
       pushLog('提示', `没有找到「${currentMonthName()}」的世界书天气池。`, { source: 'engine', authoritative: true, tone: 'amber' });
       return;
     }
     markLocalStateDirty();
+    const wroteVariables = await syncCurrentCalendarToMessageStatData('重骰今日天气');
     void writeChatSave();
-    pushLog('系统', `今日天气已重骰为「${calendar.weather}」。`, { source: 'engine', authoritative: true, tone: 'cyan' });
+    pushLog('系统', `今日天气已重骰为「${calendar.weather}」${wroteVariables ? '，并已同步当前楼层变量' : '，但当前楼层变量写入失败'}。`, {
+      source: 'engine',
+      authoritative: true,
+      tone: wroteVariables ? 'cyan' : 'amber',
+    });
   }
 
   function percentLabel(value: number, max: number, labels: [string, string, string, string, string]) {
@@ -2673,7 +2791,8 @@ export const useGameStore = defineStore('primordia', () => {
   }
 
   function clockToMinutes(clock: string) {
-    const match = clock.match(/^(\d{1,2})(?::(\d{1,2}))?/);
+    const normalizedClock = normalizeClockText(clock, '00:00');
+    const match = normalizedClock.match(/^(\d{1,2})(?::(\d{1,2}))?/);
     if (!match) return 0;
     const hour = Math.max(0, Math.min(23, Number(match[1]) || 0));
     const minute = Math.max(0, Math.min(59, Number(match[2]) || 0));
@@ -2880,6 +2999,10 @@ export const useGameStore = defineStore('primordia', () => {
   });
   const promiseMemos = ref<PromiseMemo[]>([]);
   const recipes = ref<RecipeEntry[]>([]);
+  const tavernStateFormulas = ref<TavernStateFormula[]>([]);
+  const tavernMaintenance = ref<TavernMaintenanceEntry[]>([]);
+  const businessAgreements = ref<BusinessAgreement[]>([]);
+  const businessSettlementRecords = ref<BusinessSettlementRecord[]>([]);
   const pendingCraftSources = ref<Array<{ craftId: string; source: RecipeSource; createdAt: number }>>([]);
   const DEFAULT_BUSINESS_VISITOR_CHANCE = 30;
   const REGULAR_GUEST_REVISIT_CHANCE = 8;
@@ -2980,7 +3103,7 @@ export const useGameStore = defineStore('primordia', () => {
         .split(/\n+/)
         .map(line => line.trim())
         .filter(Boolean)
-        .map((text, index) => ({ id: `draft-manual-${Date.now()}-${index}`, text, type: 'TEXT' }));
+        .map((text, index) => ({ id: `draft-manual-${Date.now()}-${index}`, text, type: 'TEXT' } satisfies DraftAction));
       draftActions.value = [...hiddenActions, ...visibleActions];
     },
   });
@@ -3044,7 +3167,7 @@ export const useGameStore = defineStore('primordia', () => {
     }, '');
   }
 
-  function appendDraft(line: string, options: { type?: DraftAction['type']; undoPatch?: DraftUndoPatch } = {}) {
+  function appendDraft(line: string, options: { type?: DraftAction['type']; undoPatch?: DraftUndoPatch; stateDiscovery?: DraftAction['stateDiscovery'] } = {}) {
     if (!line.trim()) return;
     const type = options.type ?? 'TEXT';
     if (!options.undoPatch && type !== 'TEXT') {
@@ -3060,6 +3183,7 @@ export const useGameStore = defineStore('primordia', () => {
       text: line.trim(),
       type,
       undoPatch: options.undoPatch,
+      stateDiscovery: options.stateDiscovery,
     });
   }
   function appendHiddenDraftRequirement(action: StoryActionInput) {
@@ -4053,6 +4177,12 @@ export const useGameStore = defineStore('primordia', () => {
     const needsShop = /<shop>|货架|商铺名|店名/.test(hint);
     const needsCraft = /<craft_result>|待命名|成品名|搭配判定/.test(hint);
     const needsGuestUpdate = options.allowGuestUpdate || /<guest_update>|客人|点单|上菜|服务托盘|访客/.test(hint);
+    const behaviorCharacterNames = heroines.value
+      .map(heroine => heroine.name.trim())
+      .filter(Boolean);
+    const behaviorCharacterLine = behaviorCharacterNames.length
+      ? `可学习行为的角色名单：${behaviorCharacterNames.join('、')}。character 必须填写名单里的正式姓名；多个角色各写一条，不要照抄示例里的占位文字。`
+      : 'character 必须填写当前人物羁绊里已经存在的正式姓名；多个角色各写一条，不要照抄示例里的占位文字。';
     return [
       '必须输出 <maintext>...</maintext> 正文叙述。',
       '正文写角色行动、场景描写或 NPC 反应，不要写“以下是正文”“根据要求”等元话语。',
@@ -4060,13 +4190,16 @@ export const useGameStore = defineStore('primordia', () => {
       '如果需要读档摘要，可以在最后输出 <sum>...</sum>，用1-2句话概括时间、地点、人物、事件。',
       '如本回合需要修改变量，可在正文后输出隐藏 <UpdateVariable> 或 <JSONPatch>；这些内容不得出现在 <maintext> 正文中。',
       '如果正文中产生未来承诺、预约、威胁、约好再见、某人说稍后回来等内容，请在正文后输出 <promise_update>...</promise_update> 严格 JSON 数组；trigger_time 必须换算成明确游戏时间 YYYY-MM-DD HH:mm，字段必须包含 action、name、trigger_time、people、event、reminder；不要写自然语言格式，不要把约定记录写进 <maintext>。',
+      '如果玩家本回合把库房物品用于明确的酒馆区域，并由此形成以后可以持续维持的区域状态，请输出 <tavern_state_update>[{"action":"add","name":"状态名","target_region":"现有区域名","description":"持续效果","guest_response_hint":"客人可能感受到的变化"}]</tavern_state_update>；一次性效果不要输出，物品与消耗量由前端采用本回合真实记录。',
+      '如果正文明确达成员工工资、房费、定期送货或副业收支约定，请输出 <business_agreement_update> 严格 JSON 数组；字段为 action、kind(wage/rent/delivery/sideBusiness)、name、counterparty、cashbox_delta_copper、inventory_changes、reminder。支出写负数，收入写正数；条件或金额不明确时不要创建。',
       [
         '如果配角在某个酒馆区域学会、承担或表现出以后可反复做的后台小动作，请在正文后输出 <character_behavior_update>...</character_behavior_update> 严格 JSON 数组。',
         '这个块用于维护“每个配角自己的伪活人化行为池”：让不在主角当前镜头里的配角以后也能被前端随机安排事情做。',
+        behaviorCharacterLine,
         '只写短行为词或短行为组，例如“擦桌”“摆椅”“看锅”“收杯”“整理床铺”；不要写长总结、心理成长、主角感受或完整句子。',
         '如果只是一次性动作、临时情绪、普通路过、偶然帮忙、路人行为、或没有可重复价值，则不要输出这个块。',
         'region 必须使用当前已经存在的酒馆区域名；不能确定时写空字符串。这个块不创建新人物、不创建新区域、不替代 MVU 变量。',
-        '完整格式示例：<character_behavior_update>[{"action":"learn","character":"橘柒","region":"主厅接待区","behaviors":["擦桌","摆椅","收杯"]}]</character_behavior_update>',
+        '结构示例：<character_behavior_update>[{"action":"learn","character":"角色正式姓名","region":"主厅接待区","behaviors":["擦桌","摆椅","收杯"]}]</character_behavior_update>',
         'action 只允许 learn/remove/update；character 写角色正式姓名；优先使用 behaviors 数组，每个行为控制在 2-8 个字。',
       ].join('\n'),
       [
@@ -4452,6 +4585,7 @@ export const useGameStore = defineStore('primordia', () => {
       剩余回合: turns,
       描述: desc || name,
       ...(record['来源物品'] || record['sourceItem'] ? { 来源物品: String(record['来源物品'] ?? record['sourceItem']) } : {}),
+      ...(record['维持项ID'] || record['maintenanceId'] ? { 维持项ID: String(record['维持项ID'] ?? record['maintenanceId']) } : {}),
     };
   }
 
@@ -4478,6 +4612,76 @@ export const useGameStore = defineStore('primordia', () => {
           .filter(([, list]) => list.length > 0),
       ),
     };
+  }
+
+  function extractLastXmlTag(content: string, tagName: string) {
+    const regex = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'gi');
+    const matches = [...String(content || '').matchAll(regex)];
+    return matches.at(-1)?.[1]?.trim() ?? '';
+  }
+
+  function parseJsonPatchPath(path: string) {
+    return path
+      .replace(/^\//, '')
+      .split('/')
+      .filter(Boolean)
+      .filter((part, index) => !(index === 0 && part === 'stat_data'))
+      .map(part => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+  }
+
+  function parseTemporaryStateRemovePaths(message?: string) {
+    const patchText =
+      extractLastXmlTag(String(message || ''), 'JSONPatch') ||
+      extractLastXmlTag(extractLastXmlTag(String(message || ''), 'UpdateVariable'), 'JSONPatch');
+    if (!patchText) return [];
+    try {
+      const operations = JSON.parse(patchText);
+      if (!Array.isArray(operations)) return [];
+      return operations
+        .filter(operation => {
+          if (!operation || typeof operation !== 'object') return false;
+          if (operation.op !== 'remove' && operation.op !== 'delete') return false;
+          return typeof operation.path === 'string' && parseJsonPatchPath(operation.path)[0] === '临时状态';
+        })
+        .map(operation => String(operation.path));
+    } catch {
+      return [];
+    }
+  }
+
+  function applyTemporaryStateRemovalsFromPatch(message?: string) {
+    const removePaths = parseTemporaryStateRemovePaths(message);
+    if (!removePaths.length) return false;
+
+    const next = clonePlain(temporaryStates.value);
+    let changed = false;
+    removePaths.forEach(path => {
+      const parts = parseJsonPatchPath(path);
+      if (parts[0] !== '临时状态') return;
+      let cursor: any = next;
+      for (const part of parts.slice(1, -1)) {
+        if (cursor == null || typeof cursor !== 'object') return;
+        cursor = cursor[part];
+      }
+      if (cursor == null || typeof cursor !== 'object') return;
+      const key = parts[parts.length - 1];
+      if (Array.isArray(cursor)) {
+        const index = Number(key);
+        if (!Number.isInteger(index) || index < 0 || index >= cursor.length) return;
+        cursor.splice(index, 1);
+        changed = true;
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(cursor, key)) {
+        delete cursor[key];
+        changed = true;
+      }
+    });
+    if (!changed) return false;
+
+    temporaryStates.value = normalizeTemporaryStateTree(next);
+    markLocalStateDirty();
+    return true;
   }
 
   function temporaryStateKey(targetType: TemporaryStateDisplay['targetType'], targetName: string, state: TemporaryState) {
@@ -4763,6 +4967,223 @@ export const useGameStore = defineStore('primordia', () => {
     void writeChatSave();
   }
 
+  function addSettlementRecord(record: BusinessSettlementRecord) {
+    if (businessSettlementRecords.value.some(item => item.id === record.id)) return;
+    businessSettlementRecords.value.unshift(record);
+    businessSettlementRecords.value = businessSettlementRecords.value.slice(0, 300);
+  }
+
+  function addInventoryAmount(change: BusinessAgreementInventoryChange) {
+    const existing = inventory.value.find(item => item.name === change.name && item.category === change.category && sameTagSet(item.tags, change.tags));
+    if (existing) existing.qty += change.qty;
+    else if (change.qty > 0) inventory.value.push({ id: `i-operation-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: change.name, category: change.category, qty: change.qty, tags: clonePlain(change.tags) });
+    inventory.value = inventory.value.filter(item => item.qty > 0);
+  }
+
+  function upsertMaintainedTemporaryState(entry: TavernMaintenanceEntry, formula: TavernStateFormula) {
+    const list = temporaryStates.value.酒馆区域[formula.targetRegion] ?? [];
+    const nextState: TemporaryState = { 名称: formula.name, 剩余回合: 2, 描述: formula.description, 来源物品: formula.requirements.map(item => item.name).join('、'), 维持项ID: entry.id };
+    const index = list.findIndex(state => state.维持项ID === entry.id);
+    if (index >= 0) list[index] = nextState;
+    else list.push(nextState);
+    temporaryStates.value.酒馆区域[formula.targetRegion] = list;
+  }
+
+  function settleTavernMaintenance(turn: number) {
+    const summaries: string[] = [];
+    tavernMaintenance.value.forEach(entry => {
+      if (!entry.enabled || entry.lastSettledTurn === turn) return;
+      const formula = tavernStateFormulas.value.find(item => item.id === entry.formulaId);
+      if (!formula) return;
+      const recordId = `maintenance:${entry.id}:turn:${turn}`;
+      if (businessSettlementRecords.value.some(record => record.id === recordId)) return;
+      const shortages = formula.requirements.map(requirement => {
+        const stored = findInventoryForRecipeIngredient(requirement);
+        return { requirement, stored, missing: Math.max(0, requirement.qty - (stored?.qty ?? 0)) };
+      }).filter(item => item.missing > 0);
+      if (shortages.length) {
+        entry.status = 'shortage';
+        entry.pauseReason = shortages.map(item => `${item.requirement.name}缺${item.missing}份`).join('、');
+        entry.lastSettledTurn = turn;
+        const text = `${formula.targetRegion}的「${formula.name}」因${entry.pauseReason}未能继续维持。`;
+        addSettlementRecord({ id: recordId, sourceType: 'maintenance', sourceId: entry.id, turn, daySerial: currentCalendarDay(), status: 'skipped', moneyDeltaCopper: 0, inventoryChanges: [], text, createdAt: Date.now() });
+        summaries.push(text);
+        return;
+      }
+      const changes: BusinessAgreementInventoryChange[] = [];
+      formula.requirements.forEach(requirement => {
+        const stored = findInventoryForRecipeIngredient(requirement);
+        if (stored) stored.qty = Math.max(0, stored.qty - requirement.qty);
+        changes.push({ name: requirement.name, category: requirement.category, qty: -requirement.qty, tags: clonePlain(requirement.tags) });
+      });
+      inventory.value = inventory.value.filter(item => item.qty > 0);
+      entry.status = 'active';
+      entry.pauseReason = undefined;
+      entry.lastSettledTurn = turn;
+      upsertMaintainedTemporaryState(entry, formula);
+      const text = `${formula.targetRegion}的「${formula.name}」继续生效，消耗${formula.requirements.map(item => `${item.name}${item.qty}份`).join('、')}。`;
+      addSettlementRecord({ id: recordId, sourceType: 'maintenance', sourceId: entry.id, turn, daySerial: currentCalendarDay(), status: 'success', moneyDeltaCopper: 0, inventoryChanges: changes, text, createdAt: Date.now() });
+      summaries.push(text);
+    });
+    return summaries;
+  }
+
+  function canApplyAgreementInventory(changes: BusinessAgreementInventoryChange[]) {
+    return changes.filter(change => change.qty < 0).every(change => {
+      const stored = inventory.value.find(item => item.name === change.name && item.category === change.category && sameTagSet(item.tags, change.tags));
+      return (stored?.qty ?? 0) >= Math.abs(change.qty);
+    });
+  }
+
+  function settleBusinessAgreements(turn: number) {
+    const summaries: string[] = [];
+    const today = currentCalendarDay();
+    businessAgreements.value.forEach(agreement => {
+      if (!agreement.enabled || agreement.nextDueDaySerial > today) return;
+      const dueDays = Math.max(1, today - agreement.nextDueDaySerial + 1);
+      let successCount = 0;
+      let skippedCount = 0;
+      for (let index = 0; index < dueDays; index += 1) {
+        const dueDay = agreement.nextDueDaySerial + index;
+        const recordId = `agreement:${agreement.id}:day:${dueDay}`;
+        if (businessSettlementRecords.value.some(record => record.id === recordId)) continue;
+        const enoughMoney = agreement.cashboxDeltaCopper >= 0 || cashboxCopper.value >= Math.abs(agreement.cashboxDeltaCopper);
+        const enoughInventory = canApplyAgreementInventory(agreement.inventoryChanges);
+        if (!enoughMoney || !enoughInventory) {
+          skippedCount += 1;
+          addSettlementRecord({ id: recordId, sourceType: 'agreement', sourceId: agreement.id, turn, daySerial: dueDay, status: 'skipped', moneyDeltaCopper: 0, inventoryChanges: [], text: `${agreement.name}未履行：${!enoughMoney ? '钱匣余额不足' : '约定物资不足'}。`, createdAt: Date.now() });
+          continue;
+        }
+        cashboxCopper.value = normalizeCopperValue(cashboxCopper.value + agreement.cashboxDeltaCopper);
+        agreement.inventoryChanges.forEach(addInventoryAmount);
+        successCount += 1;
+        addSettlementRecord({ id: recordId, sourceType: 'agreement', sourceId: agreement.id, turn, daySerial: dueDay, status: 'success', moneyDeltaCopper: agreement.cashboxDeltaCopper, inventoryChanges: clonePlain(agreement.inventoryChanges), text: agreement.reminder, createdAt: Date.now() });
+      }
+      agreement.lastSettledDaySerial = today;
+      agreement.nextDueDaySerial = today + 1;
+      if (successCount) summaries.push(`${agreement.name}已履行${successCount > 1 ? `${successCount}次` : ''}：${agreement.reminder}`);
+      if (skippedCount) summaries.push(`${agreement.name}有${skippedCount}次未履行，原因是资金或物资不足。`);
+    });
+    return summaries;
+  }
+
+  function settleOperationsForTurn(turn: number) {
+    const summaries = [...settleTavernMaintenance(turn), ...settleBusinessAgreements(turn)];
+    if (summaries.length) markLocalStateDirty();
+    return summaries;
+  }
+
+  function formatOperationsPromptBlock(summaries: string[]) {
+    if (!summaries.length) return '';
+    return ['【本回合经营记录】', ...summaries.map(text => `- ${text}`), '请把这些经营变化自然融入场景，不要重复计算资金或库存，也不要在正文中复述本段标题。'].join('\n');
+  }
+
+  function applyTavernStateUpdates(updates: ParsedTavernStateUpdate[] | undefined, discoveries: NonNullable<DraftAction['stateDiscovery']>[], turn: number) {
+    if (!updates?.length) return false;
+    let changed = false;
+    updates.forEach(update => {
+      const existingIndex = tavernStateFormulas.value.findIndex(item => item.id === update.id || (item.name === update.name && item.targetRegion === update.targetRegion));
+      if (update.action === 'remove') {
+        if (existingIndex < 0) return;
+        const [removed] = tavernStateFormulas.value.splice(existingIndex, 1);
+        tavernMaintenance.value = tavernMaintenance.value.filter(item => item.formulaId !== removed.id);
+        changed = true;
+        return;
+      }
+      const discovery = discoveries.find(item => item.targetRegion === update.targetRegion);
+      if (!discovery || !regions.value.some(region => region.name === discovery.targetRegion)) return;
+      const now = Date.now();
+      const formula: TavernStateFormula = {
+        id: existingIndex >= 0 ? tavernStateFormulas.value[existingIndex].id : update.id || `state-${now}-${Math.random().toString(36).slice(2, 7)}`,
+        name: update.name,
+        targetRegion: discovery.targetRegion,
+        requirements: [{ name: discovery.itemName, category: discovery.category, qty: discovery.qty, tags: clonePlain(discovery.tags) }],
+        description: update.description,
+        guestResponseHint: update.guestResponseHint,
+        createdAt: existingIndex >= 0 ? tavernStateFormulas.value[existingIndex].createdAt : now,
+        updatedAt: now,
+      };
+      if (existingIndex >= 0) tavernStateFormulas.value[existingIndex] = formula;
+      else tavernStateFormulas.value.unshift(formula);
+      let maintenance = tavernMaintenance.value.find(item => item.formulaId === formula.id);
+      if (!maintenance) {
+        maintenance = { id: `maint-${formula.id}`, formulaId: formula.id, enabled: true, status: 'active', lastSettledTurn: turn };
+        tavernMaintenance.value.unshift(maintenance);
+      } else {
+        maintenance.enabled = true;
+        maintenance.status = 'active';
+        maintenance.pauseReason = undefined;
+        maintenance.lastSettledTurn = turn;
+      }
+      upsertMaintainedTemporaryState(maintenance, formula);
+      pushLog('系统', `经营状态已收录 · ${formula.targetRegion} · ${formula.name}`, { source: 'ai', authoritative: false, tone: 'green', actionType: 'TAVERN_STATE_DISCOVERY' });
+      changed = true;
+    });
+    return changed;
+  }
+
+  function applyBusinessAgreementUpdates(updates: ParsedBusinessAgreementUpdate[] | undefined) {
+    if (!updates?.length) return false;
+    let changed = false;
+    updates.forEach(update => {
+      const index = businessAgreements.value.findIndex(item => item.id === update.id || (item.name === update.name && item.counterparty === update.counterparty));
+      if (update.action === 'cancel') {
+        if (index >= 0) businessAgreements.value[index].enabled = false;
+        changed ||= index >= 0;
+        return;
+      }
+      const next: BusinessAgreement = {
+        id: index >= 0 ? businessAgreements.value[index].id : update.id || `agreement-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        kind: update.kind,
+        name: update.name,
+        counterparty: update.counterparty,
+        enabled: true,
+        cadence: 'daily',
+        cashboxDeltaCopper: update.cashboxDeltaCopper,
+        inventoryChanges: update.inventoryChanges.map(item => ({ ...item, category: normalizeInventoryCategory(item.category) })),
+        reminder: update.reminder,
+        nextDueDaySerial: index >= 0 ? businessAgreements.value[index].nextDueDaySerial : currentCalendarDay() + 1,
+        ...(index >= 0 && businessAgreements.value[index].lastSettledDaySerial !== undefined ? { lastSettledDaySerial: businessAgreements.value[index].lastSettledDaySerial } : {}),
+      };
+      if (index >= 0) businessAgreements.value[index] = next;
+      else businessAgreements.value.unshift(next);
+      pushLog('系统', `长期约定已记录 · ${next.name}`, { source: 'ai', authoritative: false, tone: 'cyan', actionType: 'BUSINESS_AGREEMENT' });
+      changed = true;
+    });
+    return changed;
+  }
+
+  function setMaintenanceEnabled(id: string, enabled: boolean) {
+    const entry = tavernMaintenance.value.find(item => item.id === id);
+    if (!entry) return;
+    entry.enabled = enabled;
+    entry.status = enabled ? 'active' : 'disabled';
+    entry.pauseReason = undefined;
+    markLocalStateDirty();
+    void writeChatSave();
+  }
+
+  function setBusinessAgreementEnabled(id: string, enabled: boolean) {
+    const agreement = businessAgreements.value.find(item => item.id === id);
+    if (!agreement) return;
+    agreement.enabled = enabled;
+    markLocalStateDirty();
+    void writeChatSave();
+  }
+
+  function deleteTavernStateFormula(id: string) {
+    tavernStateFormulas.value = tavernStateFormulas.value.filter(item => item.id !== id);
+    tavernMaintenance.value = tavernMaintenance.value.filter(item => item.formulaId !== id);
+    markLocalStateDirty();
+    void writeChatSave();
+  }
+
+  function deleteBusinessAgreement(id: string) {
+    businessAgreements.value = businessAgreements.value.filter(item => item.id !== id);
+    markLocalStateDirty();
+    void writeChatSave();
+  }
+
   function addItemToCollection(collection: InventoryItem[], item: BuyActionItem | InventoryItem) {
     const category = normalizeInventoryCategory(item.category);
     const tags = 'tags' in item ? [...new Set((item.tags ?? []).map(tag => String(tag).trim()).filter(Boolean))] : [];
@@ -4854,6 +5275,109 @@ export const useGameStore = defineStore('primordia', () => {
   function collectRecipeEntriesFromFloorSnapshots(floorSnapshots: unknown) {
     const root = floorSnapshots && typeof floorSnapshots === 'object' ? floorSnapshots as Record<string, unknown> : {};
     return Object.values(root).flatMap(snapshot => normalizeRecipeEntries(asRecord(snapshot).recipes));
+  }
+
+  function normalizeStateFormula(raw: unknown): TavernStateFormula | null {
+    const record = asRecord(raw);
+    const name = String(record.name ?? '').trim();
+    const targetRegion = String(record.targetRegion ?? '').trim();
+    const requirements = (Array.isArray(record.requirements) ? record.requirements : [])
+      .map(item => {
+        const source = asRecord(item);
+        const itemName = String(source.name ?? '').trim();
+        if (!itemName) return null;
+        return {
+          name: itemName,
+          category: normalizeInventoryCategory(source.category),
+          qty: Math.max(1, Math.floor(Number(source.qty) || 1)),
+          tags: Array.isArray(source.tags) ? source.tags.map(String).filter(Boolean) : [],
+          ...(Number(source.priceCopper) > 0 ? { priceCopper: Math.floor(Number(source.priceCopper)) } : {}),
+        } satisfies RecipeIngredient;
+      })
+      .filter((item): item is RecipeIngredient => item !== null);
+    if (!name || !targetRegion || !requirements.length) return null;
+    const now = Date.now();
+    return {
+      id: String(record.id || `state-${now}-${Math.random().toString(36).slice(2, 7)}`),
+      name,
+      targetRegion,
+      requirements,
+      description: String(record.description || name).trim(),
+      guestResponseHint: String(record.guestResponseHint || '').trim(),
+      createdAt: Math.floor(Number(record.createdAt) || now),
+      updatedAt: Math.floor(Number(record.updatedAt) || now),
+    };
+  }
+
+  function normalizeStateFormulaList(raw: unknown) {
+    if (!Array.isArray(raw)) return [] as TavernStateFormula[];
+    const byKey = new Map<string, TavernStateFormula>();
+    raw.forEach(item => {
+      const formula = normalizeStateFormula(item);
+      if (!formula) return;
+      const key = `${formula.name}::${formula.targetRegion}::${formula.requirements.map(req => `${req.name}:${req.qty}`).join('|')}`;
+      const existing = byKey.get(key);
+      if (!existing || formula.updatedAt >= existing.updatedAt) byKey.set(key, formula);
+    });
+    return [...byKey.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  function normalizeMaintenanceList(raw: unknown) {
+    if (!Array.isArray(raw)) return [] as TavernMaintenanceEntry[];
+    return raw.map(item => {
+      const record = asRecord(item);
+      const formulaId = String(record.formulaId || '').trim();
+      if (!formulaId) return null;
+      const enabled = record.enabled !== false;
+      const statusText = String(record.status || 'active');
+      return {
+        id: String(record.id || `maint-${formulaId}`),
+        formulaId,
+        enabled,
+        status: enabled ? (statusText === 'shortage' ? 'shortage' : 'active') : 'disabled',
+        ...(Number.isFinite(Number(record.lastSettledTurn)) ? { lastSettledTurn: Math.max(0, Math.floor(Number(record.lastSettledTurn))) } : {}),
+        ...(record.pauseReason ? { pauseReason: String(record.pauseReason) } : {}),
+      } satisfies TavernMaintenanceEntry;
+    }).filter((item): item is TavernMaintenanceEntry => item !== null);
+  }
+
+  function normalizeAgreementList(raw: unknown) {
+    if (!Array.isArray(raw)) return [] as BusinessAgreement[];
+    return raw.map(item => {
+      const record = asRecord(item);
+      const name = String(record.name || '').trim();
+      const counterparty = String(record.counterparty || '').trim();
+      if (!name || !counterparty) return null;
+      const kindText = String(record.kind || 'wage');
+      const kind: BusinessAgreement['kind'] = kindText === 'rent' || kindText === 'delivery' || kindText === 'sideBusiness' ? kindText : 'wage';
+      const inventoryChanges = (Array.isArray(record.inventoryChanges) ? record.inventoryChanges : []).map(change => {
+        const source = asRecord(change);
+        return {
+          name: String(source.name || '').trim(),
+          category: normalizeInventoryCategory(source.category),
+          qty: Math.trunc(Number(source.qty) || 0),
+          tags: Array.isArray(source.tags) ? source.tags.map(String).filter(Boolean) : [],
+        };
+      }).filter(change => change.name && change.qty !== 0);
+      return {
+        id: String(record.id || `agreement-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`),
+        kind,
+        name,
+        counterparty,
+        enabled: record.enabled !== false,
+        cadence: 'daily',
+        cashboxDeltaCopper: Math.trunc(Number(record.cashboxDeltaCopper) || 0),
+        inventoryChanges,
+        reminder: String(record.reminder || name).trim(),
+        nextDueDaySerial: Math.max(0, Math.floor(Number(record.nextDueDaySerial) || currentCalendarDay() + 1)),
+        ...(Number.isFinite(Number(record.lastSettledDaySerial)) ? { lastSettledDaySerial: Math.max(0, Math.floor(Number(record.lastSettledDaySerial))) } : {}),
+      } satisfies BusinessAgreement;
+    }).filter((item): item is BusinessAgreement => item !== null);
+  }
+
+  function normalizeSettlementRecords(raw: unknown) {
+    if (!Array.isArray(raw)) return [] as BusinessSettlementRecord[];
+    return clonePlain(raw).filter(record => record && typeof record.id === 'string' && (record.sourceType === 'maintenance' || record.sourceType === 'agreement')).slice(0, 300) as BusinessSettlementRecord[];
   }
 
   function findInventoryForRecipeIngredient(ingredient: RecipeIngredient) {
@@ -5660,7 +6184,7 @@ export const useGameStore = defineStore('primordia', () => {
         monthIndex: calendar.monthIndex,
         day: calendar.day,
         timeOfDay: calendar.timeOfDay,
-        clock: calendar.clock,
+        clock: normalizeClockText(calendar.clock, '00:00'),
         weather: calendar.weather,
         weatherIcon: calendar.weatherIcon,
         weatherDescription: calendar.weatherDescription,
@@ -5705,6 +6229,10 @@ export const useGameStore = defineStore('primordia', () => {
       temporaryStates: clonePlain(temporaryStates.value),
       promiseMemos: clonePlain(promiseMemos.value),
       recipes: clonePlain(recipes.value),
+      tavernStateFormulas: clonePlain(tavernStateFormulas.value),
+      tavernMaintenance: clonePlain(tavernMaintenance.value),
+      businessAgreements: clonePlain(businessAgreements.value),
+      businessSettlementRecords: clonePlain(businessSettlementRecords.value),
       generatedShop: generatedShop.value ? clonePlain(generatedShop.value) : null,
       generatedShopProducts: clonePlain(generatedShopProducts.value),
       farmPlots: clonePlain(farmPlots.value),
@@ -5774,6 +6302,10 @@ export const useGameStore = defineStore('primordia', () => {
     temporaryStates.value = normalizeTemporaryStateTree(snapshot.temporaryStates);
     promiseMemos.value = normalizePromiseMemoList(snapshot.promiseMemos);
     recipes.value = clonePlain(snapshot.recipes);
+    tavernStateFormulas.value = normalizeStateFormulaList(snapshot.tavernStateFormulas);
+    tavernMaintenance.value = normalizeMaintenanceList(snapshot.tavernMaintenance);
+    businessAgreements.value = normalizeAgreementList(snapshot.businessAgreements);
+    businessSettlementRecords.value = normalizeSettlementRecords(snapshot.businessSettlementRecords);
     generatedShop.value = snapshot.generatedShop ? clonePlain(snapshot.generatedShop) : null;
     generatedShopProducts.value = clonePlain(snapshot.generatedShopProducts);
     farmPlots.value = clonePlain(snapshot.farmPlots);
@@ -5839,6 +6371,23 @@ export const useGameStore = defineStore('primordia', () => {
         : undefined;
       appendDraft(result.narrativeFact ?? result.message, {
         type: action.type,
+        stateDiscovery:
+          action.type === 'USE_ITEM' && action.target?.startsWith('酒馆区域：')
+            ? (() => {
+                const sourceItem = rollbackSnapshot
+                  ? (action.source === 'storage' ? rollbackSnapshot.inventory : rollbackSnapshot.satchel).find(item => item.id === action.itemId)
+                  : undefined;
+                return sourceItem
+                  ? {
+                      itemName: sourceItem.name,
+                      category: sourceItem.category,
+                      tags: clonePlain(sourceItem.tags),
+                      qty: Math.max(1, Math.floor(Number(action.qty) || 1)),
+                      targetRegion: action.target.replace(/^酒馆区域：/, '').trim(),
+                    }
+                  : undefined;
+              })()
+            : undefined,
         undoPatch: buyUndoPatch ?? (
           rollbackSnapshot && !narrative.autoSend
             ? {
@@ -6247,8 +6796,8 @@ export const useGameStore = defineStore('primordia', () => {
       message: action.open ? '酒馆已开始营业。' : '酒馆已歇业。',
       shouldAskAI: false,
       narrativeFact: action.open
-        ? `当前位置为「${currentSceneLabel()}」。玩家正式打开「${tavernName.value}」开始营业。前端已把营业状态切换为开启，当前普通客流占座 ${currentGuests.value}/${guestCap.value}，互动访客率 ${visitorChance.value}%。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`
-        : `当前位置为「${currentSceneLabel()}」。玩家让「${tavernName.value}」歇业收店。前端已把营业状态切换为关闭，并清空当前客流记录。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`,
+        ? `当前位置为「${currentSceneLabel()}」。玩家把「${tavernName.value}」门口招牌翻到“营业”，酒馆开始接待新客；当前普通客流占座 ${currentGuests.value}/${guestCap.value}，互动访客率 ${visitorChance.value}%。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`
+        : `当前位置为「${currentSceneLabel()}」。玩家把「${tavernName.value}」门口招牌翻到“歇业”，酒馆暂时不再接待新客，当前客流记录已清空。此前营业状态为${wasOpen ? '已营业' : '未营业'}。`,
       aiHint: '无需生成正文。',
     };
   }
@@ -6628,7 +7177,7 @@ export const useGameStore = defineStore('primordia', () => {
           季节: seasonText.value,
           日: calendar.day,
           天气: normalizeWeatherName(calendar.weather),
-          时间: calendar.clock,
+          时间: normalizeClockText(calendar.clock, '00:00'),
         },
         当前地点: {
           区域: location.region,
@@ -6831,7 +7380,7 @@ export const useGameStore = defineStore('primordia', () => {
         monthIndex: calendar.monthIndex,
         day: calendar.day,
         timeOfDay: calendar.timeOfDay,
-        clock: calendar.clock,
+        clock: normalizeClockText(calendar.clock, '00:00'),
         weather: calendar.weather,
         weatherIcon: calendar.weatherIcon,
         weatherDescription: calendar.weatherDescription,
@@ -6881,6 +7430,10 @@ export const useGameStore = defineStore('primordia', () => {
       temporaryStates: clonePlain(temporaryStates.value),
       promiseMemos: clonePlain(promiseMemos.value),
       recipes: clonePlain(recipes.value),
+      tavernStateFormulas: clonePlain(tavernStateFormulas.value),
+      tavernMaintenance: clonePlain(tavernMaintenance.value),
+      businessAgreements: clonePlain(businessAgreements.value),
+      businessSettlementRecords: clonePlain(businessSettlementRecords.value),
       engineLogs: clonePlain(engineLogs.value),
       generatedShop: activeGeneratedShop ? clonePlain(activeGeneratedShop) : null,
       generatedShopProducts: activeGeneratedShop ? clonePlain(generatedShopProducts.value) : [],
@@ -6997,7 +7550,7 @@ export const useGameStore = defineStore('primordia', () => {
         monthIndex: Math.max(0, Math.min(months.length - 1, Math.floor(Number(sourceCalendar.monthIndex) || calendar.monthIndex))),
         day: Math.max(1, Math.floor(Number(sourceCalendar.day) || calendar.day)),
         timeOfDay: String(sourceCalendar.timeOfDay || calendar.timeOfDay),
-        clock: String(sourceCalendar.clock || calendar.clock),
+        clock: normalizeClockText(sourceCalendar.clock, calendar.clock),
         weather: String(sourceCalendar.weather || calendar.weather),
         weatherIcon: ['sun', 'cloud', 'rain', 'snow', 'moon'].includes(String(sourceCalendar.weatherIcon))
           ? (sourceCalendar.weatherIcon as CalendarSnapshot['weatherIcon'])
@@ -7086,6 +7639,10 @@ export const useGameStore = defineStore('primordia', () => {
         recipes.value,
         source.recipes,
       ),
+      tavernStateFormulas: normalizeStateFormulaList(source.tavernStateFormulas),
+      tavernMaintenance: normalizeMaintenanceList(source.tavernMaintenance),
+      businessAgreements: normalizeAgreementList(source.businessAgreements),
+      businessSettlementRecords: normalizeSettlementRecords(source.businessSettlementRecords),
       engineLogs: Array.isArray(source.engineLogs) ? clonePlain(source.engineLogs) : clonePlain(engineLogs.value),
       generatedShop: normalizedShop,
       generatedShopProducts: normalizedProducts,
@@ -7171,8 +7728,8 @@ export const useGameStore = defineStore('primordia', () => {
     calendar.year = normalized.calendar.year;
     calendar.monthIndex = normalized.calendar.monthIndex;
     calendar.day = normalized.calendar.day;
-    calendar.timeOfDay = normalized.calendar.timeOfDay as TimeOfDay;
-    calendar.clock = normalized.calendar.clock;
+    calendar.clock = normalizeClockText(normalized.calendar.clock, calendar.clock);
+    calendar.timeOfDay = timeOfDayFromClock(calendar.clock) ?? (normalized.calendar.timeOfDay as TimeOfDay);
     calendar.weather = normalizeWeatherName(normalized.calendar.weather);
     calendar.weatherIcon = normalized.calendar.weatherIcon;
     calendar.weatherDescription = normalized.calendar.weatherDescription ?? '';
@@ -7235,6 +7792,10 @@ export const useGameStore = defineStore('primordia', () => {
     // World facts are restored from the current floor stat_data, not the frontend save snapshot.
     promiseMemos.value = normalizePromiseMemoList(normalized.promiseMemos);
     recipes.value = clonePlain(normalized.recipes ?? []);
+    tavernStateFormulas.value = normalizeStateFormulaList(normalized.tavernStateFormulas);
+    tavernMaintenance.value = normalizeMaintenanceList(normalized.tavernMaintenance);
+    businessAgreements.value = normalizeAgreementList(normalized.businessAgreements);
+    businessSettlementRecords.value = normalizeSettlementRecords(normalized.businessSettlementRecords);
     engineLogs.value = clonePlain(normalized.engineLogs);
     draftActions.value = clonePlain(normalized.draftActions ?? []);
     openingSave.value = normalized.opening ? clonePlain(normalized.opening) : null;
@@ -7254,10 +7815,15 @@ export const useGameStore = defineStore('primordia', () => {
     if (!openingSnapshotMatchesCurrentChat(normalized.opening, normalized.lastMessageId)) return false;
     const nextPromiseMemos = normalizePromiseMemoList(normalized.promiseMemos);
     const nextRecipes = mergeRecipeEntries(recipes.value, normalized.recipes);
-    const changed = Boolean(nextPromiseMemos.length || nextRecipes.length);
+    const nextFormulas = normalizeStateFormulaList([...tavernStateFormulas.value, ...(normalized.tavernStateFormulas ?? [])]);
+    const changed = Boolean(nextPromiseMemos.length || nextRecipes.length || nextFormulas.length || normalized.businessAgreements?.length);
     if (!changed) return false;
     promiseMemos.value = nextPromiseMemos;
     recipes.value = nextRecipes;
+    tavernStateFormulas.value = nextFormulas;
+    tavernMaintenance.value = normalizeMaintenanceList(normalized.tavernMaintenance);
+    businessAgreements.value = normalizeAgreementList(normalized.businessAgreements);
+    businessSettlementRecords.value = normalizeSettlementRecords(normalized.businessSettlementRecords);
     return true;
   }
 
@@ -7272,7 +7838,7 @@ export const useGameStore = defineStore('primordia', () => {
       .sort((a, b) => b.messageId - a.messageId)
       .find(entry => {
         const normalized = normalizeSaveSnapshot(entry.floorSnapshot);
-        return Boolean(normalized && (normalized.promiseMemos.length || normalized.recipes?.length));
+        return Boolean(normalized && (normalized.promiseMemos?.length || normalized.recipes?.length || normalized.tavernStateFormulas?.length || normalized.businessAgreements?.length));
       });
     if (fallback && restoreFrontendOnlySnapshot(fallback.floorSnapshot)) return true;
     const mergedRecipes = mergeRecipeEntries(
@@ -7338,8 +7904,10 @@ export const useGameStore = defineStore('primordia', () => {
         return false;
       }
       const restoredSnapshot = snapshot ? applyChatSaveSnapshot(snapshot) : false;
-      if (!restoredSnapshot) restoreFrontendOnlyFromChatSave(snapshot);
-      syncFrontendFromMessageMvu({ restoreInventory: true });
+      if (!restoredSnapshot) {
+        restoreFrontendOnlyFromChatSave(snapshot);
+        syncFrontendFromMessageMvu({ restoreInventory: true });
+      }
       replayLatestCraftResultForPending();
       return restoredSnapshot;
     } catch (error) {
@@ -7770,6 +8338,10 @@ export const useGameStore = defineStore('primordia', () => {
     temporaryStates.value = emptyTemporaryStates();
     promiseMemos.value = [];
     recipes.value = [];
+    tavernStateFormulas.value = [];
+    tavernMaintenance.value = [];
+    businessAgreements.value = [];
+    businessSettlementRecords.value = [];
     generatedShop.value = null;
     generatedShopProducts.value = [];
     draftActions.value = [];
@@ -8333,12 +8905,9 @@ export const useGameStore = defineStore('primordia', () => {
     const clockTextFromMvu = String(
       readFirstPath(data, [...legacyPathAliases('世界.当前历法.时间'), '世界.当前历法.钟点', '世界.当前历法.clock'], '') || '',
     ).trim();
-    const clockMatch = clockTextFromMvu.match(/(\d{1,2})\s*:\s*(\d{1,2})/);
-    if (clockMatch) {
-      const [, hourRaw, minuteRaw] = clockMatch;
-      const hour = Math.max(0, Math.min(23, Math.floor(Number(hourRaw) || 0)));
-      const minute = Math.max(0, Math.min(59, Math.floor(Number(minuteRaw) || 0)));
-      calendar.clock = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    const normalizedClockFromMvu = normalizeClockText(clockTextFromMvu, '');
+    if (normalizedClockFromMvu) {
+      calendar.clock = normalizedClockFromMvu;
       calendar.timeOfDay = timeOfDayFromClock(calendar.clock) ?? calendar.timeOfDay;
       appliedExplicitTime = true;
     } else {
@@ -9558,8 +10127,107 @@ export const useGameStore = defineStore('primordia', () => {
     return false;
   }
 
+  function shouldApplyCapturedCraftResult(result: ParsedCraftResult) {
+    if (findPendingCraftItem(result.craftId)) return true;
+    if (inventory.value.some(item => isPendingCraftItem(item))) return true;
+    const isBarrel = /酒窖|桶|熟成|发酵|陈放/.test(result.destination);
+    if (isBarrel) {
+      const barrelName = result.barrelName || `${result.name}桶`;
+      return !brews.value.some(barrel => barrel.name === barrelName || barrel.expected === result.name);
+    }
+    return !inventory.value.some(item => item.name === result.name && item.qty >= result.quantity);
+  }
+
+  async function refreshCapturedFormatsFromLatestMessage(target: CapturedFormatTarget = 'all') {
+    const latest = loadLatestAssistantMaintext();
+    if (!latest.fullMessage?.trim()) {
+      pushLog('提示', '没有读到可扫描的最新正文。', {
+        source: 'engine',
+        authoritative: true,
+        tone: 'amber',
+        actionType: 'FORMAT_REFRESH',
+      });
+      return false;
+    }
+
+    const wants = (name: CapturedFormatTarget) => target === 'all' || target === name;
+    const completedTurn = successfulNarrationTurn.value + 1;
+    const applied: string[] = [];
+    let wroteSnapshot = false;
+
+    if (wants('shop') && latest.shop) {
+      applyGeneratedShop(latest.shop);
+      const nextData = getAuthoritativeMvuData(latest.messageId, '手动刷新捕捉格式：商铺');
+      persistParsedShopIntoMvuData(nextData, latest.shop);
+      await writeCurrentMessageStatData(nextData, latest.messageId);
+      applied.push(`商铺 ${latest.shop.name}`);
+      wroteSnapshot = true;
+    }
+
+    if (wants('craft') && latest.craftResult) {
+      if (shouldApplyCapturedCraftResult(latest.craftResult) && applyCraftResult(latest.craftResult)) {
+        applied.push(`制作 ${latest.craftResult.name}`);
+        wroteSnapshot = true;
+      }
+    }
+
+    if (wants('guest') && latest.guestUpdates?.length && applyGuestUpdates(latest.guestUpdates, completedTurn)) {
+      applied.push(`客人 ${latest.guestUpdates.length}条`);
+    }
+
+    if (wants('regularGuest') && latest.regularGuestUpdates?.length) {
+      const changed = addPendingRegularGuestUpdates(latest.regularGuestUpdates, completedTurn);
+      if (changed) applied.push(`常客 ${changed}条`);
+    }
+
+    if (wants('promise') && latest.promiseUpdates?.length && applyPromiseUpdates(latest.promiseUpdates)) {
+      applied.push(`约定 ${latest.promiseUpdates.length}条`);
+    }
+
+    if (wants('businessAgreement') && latest.businessAgreementUpdates?.length && applyBusinessAgreementUpdates(latest.businessAgreementUpdates)) {
+      applied.push(`经营约定 ${latest.businessAgreementUpdates.length}条`);
+    }
+
+    if (wants('characterBehavior') && latest.characterBehaviorUpdates?.length) {
+      const changed = await applyCharacterBehaviorUpdates(latest.characterBehaviorUpdates, completedTurn);
+      if (changed) applied.push(`角色行为 ${latest.characterBehaviorUpdates.length}条`);
+    }
+
+    if (wants('tavernState') && latest.tavernStateUpdates?.length) {
+      pushLog('提示', '最新正文包含经营状态格式，但缺少本回合物品消耗来源；请用发送行动流程收录，或在经营附录手动维护。', {
+        source: 'engine',
+        authoritative: true,
+        tone: 'amber',
+        actionType: 'FORMAT_REFRESH',
+      });
+    }
+
+    if (!applied.length) {
+      pushLog('提示', '已扫描最新正文，但没有发现可新增/刷新到当前前端的目标格式。', {
+        source: 'engine',
+        authoritative: true,
+        tone: 'amber',
+        actionType: 'FORMAT_REFRESH',
+      });
+      return false;
+    }
+
+    markLocalStateDirty();
+    if (!wroteSnapshot) {
+      await writeCurrentMessageStatData(buildFrontendMvuSnapshot(`手动刷新捕捉格式：${applied.join('、')}`), latest.messageId);
+    }
+    await writeChatSave(latest);
+    pushLog('系统', `已从最新正文刷新捕捉格式：${applied.join('、')}。`, {
+      source: 'engine',
+      authoritative: true,
+      tone: 'cyan',
+      actionType: 'FORMAT_REFRESH',
+    });
+    return true;
+  }
+
   const restoredFromChatSave = restoreFromChatSave();
-  const syncedFromMvu = loadFromMvu({ force: true });
+  const syncedFromMvu = restoredFromChatSave ? false : loadFromMvu({ force: true });
   if ((!restoredFromChatSave || heroines.value.length === 0) && !syncedFromMvu) loadFromMvu({ force: true });
   if (restoredFromChatSave && heroines.value.length > 0 && (openingCompleted.value || hasStartedNarrativeAfterBoot())) void writeChatSave();
   if (openingSave.value?.worldbookName && (openingCompleted.value || hasStartedNarrativeAfterBoot())) {
@@ -9592,10 +10260,19 @@ export const useGameStore = defineStore('primordia', () => {
     }
     if (!reloadMvu) mvuReloadSuppressedUntil.value = Date.now() + 8000;
     isGenerating.value = true;
+    let operationsRollback: LocalSettlementSnapshot | null = null;
+    let operationsChanged = false;
     try {
+      const completedTurnTarget = successfulNarrationTurn.value + 1;
+      const stateDiscoveries = draftActions.value.map(action => action.stateDiscovery).filter((item): item is NonNullable<DraftAction['stateDiscovery']> => Boolean(item));
+      operationsRollback = snapshotLocalSettlement();
+      const operationsSummaries = settleOperationsForTurn(completedTurnTarget);
+      operationsChanged = operationsSummaries.length > 0;
       const duePromiseMemosForTurn = duePromiseMemos();
       const duePromiseMemoIds = duePromiseMemosForTurn.map(memo => memo.id);
-      const scenePromptForRequest = appendDuePromiseMemoBlock(scenePrompt, duePromiseMemosForTurn);
+      const operationsBlock = formatOperationsPromptBlock(operationsSummaries);
+      const promptWithOperations = operationsBlock ? `${scenePrompt}\n\n${operationsBlock}` : scenePrompt;
+      const scenePromptForRequest = appendDuePromiseMemoBlock(promptWithOperations, duePromiseMemosForTurn);
       const temporaryStateKeysBeforeTurn = captureTemporaryStateKeys();
       const authoritativeData = options.useFrontendAuthority
         ? buildFrontendMvuSnapshot(combined)
@@ -9661,6 +10338,8 @@ export const useGameStore = defineStore('primordia', () => {
           const inventorySynced = applyInventoryPatch;
           const satchelSynced = applyInventoryPatch;
           const temporaryStatesSynced = applyTemporaryStatesFromMvuData(finalMvuData);
+          const temporaryStateRemovalsApplied = applyTemporaryStateRemovalsFromPatch(result.latest?.fullMessage);
+          if (temporaryStateRemovalsApplied) finalMvuData = statDataWithCurrentTemporaryStates(finalMvuData);
           await writeCurrentMessageStatData(finalMvuData, result.latest?.messageId);
           if (inventorySynced || satchelSynced) {
             pushLog('系统', `${inventorySynced && satchelSynced ? '库房与行囊' : inventorySynced ? '库房' : '行囊'}已按本回合变量/MVU结果同步。`, {
@@ -9670,7 +10349,7 @@ export const useGameStore = defineStore('primordia', () => {
               actionType: 'MVU_INVENTORY_SYNC',
             });
           }
-          if (temporaryStatesSynced) {
+          if (temporaryStatesSynced || temporaryStateRemovalsApplied) {
             pushLog('系统', '临时状态已按本回合变量/MVU结果同步。', {
               source: 'ai',
               authoritative: false,
@@ -9685,6 +10364,7 @@ export const useGameStore = defineStore('primordia', () => {
         if (result.latest?.regularGuestUpdates?.length) addPendingRegularGuestUpdates(result.latest.regularGuestUpdates, successfulNarrationTurn.value + 1);
         if (result.latest?.promiseUpdates?.length) applyPromiseUpdates(result.latest.promiseUpdates);
         const completedTurn = successfulNarrationTurn.value + 1;
+        if (result.latest?.businessAgreementUpdates?.length) applyBusinessAgreementUpdates(result.latest.businessAgreementUpdates);
         if (result.latest?.characterBehaviorUpdates?.length) {
           await applyCharacterBehaviorUpdates(result.latest.characterBehaviorUpdates, completedTurn);
         }
@@ -9706,6 +10386,11 @@ export const useGameStore = defineStore('primordia', () => {
           await writeCurrentMessageStatData(finalMvuData, result.latest?.messageId);
           applyTemporaryStatesFromMvuData(finalMvuData);
         }
+        if (result.latest?.tavernStateUpdates?.length && applyTavernStateUpdates(result.latest.tavernStateUpdates, stateDiscoveries, completedTurn)) {
+          const stateBase = finalMvuData ?? getAuthoritativeMvuData(result.latest?.messageId, '经营状态收录');
+          finalMvuData = statDataWithCurrentTemporaryStates(stateBase);
+          await writeCurrentMessageStatData(finalMvuData, result.latest?.messageId);
+        }
         successfulNarrationTurn.value = completedTurn;
         clearActionDraft();
         playerInput.value = '';
@@ -9720,6 +10405,7 @@ export const useGameStore = defineStore('primordia', () => {
         });
         return true;
       } else {
+        if (operationsRollback && operationsSummaries.length) await restoreLocalSettlement(operationsRollback, '本回合没有生成成功，经营扣除已还原。');
         pushLog('提示', result.error ?? '生成失败。', {
           source: 'engine',
           authoritative: true,
@@ -9728,6 +10414,7 @@ export const useGameStore = defineStore('primordia', () => {
         return false;
       }
     } catch (error) {
+      if (operationsRollback && operationsChanged) await restoreLocalSettlement(operationsRollback, '本回合生成中断，经营扣除已还原。');
       pushLog('提示', error instanceof Error ? error.message : '生成失败。', {
         source: 'engine',
         authoritative: true,
@@ -9947,6 +10634,10 @@ export const useGameStore = defineStore('primordia', () => {
     todayCalendarEvents,
     updatePromiseMemoStatus,
     recipes,
+    tavernStateFormulas,
+    tavernMaintenance,
+    businessAgreements,
+    businessSettlementRecords,
     heroines,
     tavernNpcActivities,
     successfulNarrationTurn,
@@ -10078,11 +10769,16 @@ export const useGameStore = defineStore('primordia', () => {
     recipeShortages,
     craftRecipe,
     deleteRecipe,
+    setMaintenanceEnabled,
+    setBusinessAgreementEnabled,
+    deleteTavernStateFormula,
+    deleteBusinessAgreement,
     buildDebugSaveJson,
     importDebugSaveJson,
     buildWorldbookScanPreview,
     buildLatestPromptPreview,
     runReadonlyHealthCheck,
+    refreshCapturedFormatsFromLatestMessage,
     buildCurrentScenePrompt,
     buildFrontendMvuSnapshot,
     getAuthoritativeMvuData,

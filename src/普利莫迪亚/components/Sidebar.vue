@@ -40,6 +40,7 @@ const navGroups: NavGroup[] = [
     sub: '区域 · 商铺 · 账单',
     items: [
       { id: 'tavern', name: '酒馆', icon: 'tavern', sub: '主厅 · 房间 · 经营', status: 'ready' },
+      { id: 'operations', name: '经营附录', icon: 'ledger', sub: '状态 · 维持 · 约定', status: 'ready' },
       { id: 'regularGuests', name: '常客簿', icon: 'people', sub: '老面孔 · 团体 · 回访', status: 'ready' },
       { id: 'shop', name: '街坊商铺', icon: 'coin', sub: '店铺 · 货架 · 购买', status: 'ready' },
       { id: 'ledger', name: '账单', icon: 'ledger', sub: '历史足迹 · 资产', status: 'ready' },

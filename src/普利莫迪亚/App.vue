@@ -10,6 +10,7 @@ import OpeningWorkshop from './components/OpeningWorkshop.vue';
 
 import ChroniclePage from './pages/ChroniclePage.vue';
 import TavernPage from './pages/TavernPage.vue';
+import OperationsPage from './pages/OperationsPage.vue';
 import RegularGuestsPage from './pages/RegularGuestsPage.vue';
 import ProtagonistPage from './pages/ProtagonistPage.vue';
 import InventoryPage from './pages/InventoryPage.vue';
@@ -250,6 +251,8 @@ const tabComponent = computed(() => {
       return ChroniclePage;
     case 'tavern':
       return TavernPage;
+    case 'operations':
+      return OperationsPage;
     case 'regularGuests':
       return RegularGuestsPage;
     case 'protagonist':
@@ -285,6 +288,7 @@ const tabTitle = computed(
       opening: '开场选择',
       chronicle: '编年录 · 正文',
       tavern: '酒馆 · 八区域',
+      operations: '经营附录',
       regularGuests: '常客簿',
       protagonist: '主角档案',
       inventory: '行囊与库房',

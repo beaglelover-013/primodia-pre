@@ -12,6 +12,8 @@ export interface StoryMessagePayload {
   guestUpdates?: ParsedGuestUpdate[];
   regularGuestUpdates?: ParsedRegularGuestUpdate[];
   promiseUpdates?: ParsedPromiseUpdate[];
+  tavernStateUpdates?: ParsedTavernStateUpdate[];
+  businessAgreementUpdates?: ParsedBusinessAgreementUpdate[];
   characterBehaviorUpdates?: ParsedCharacterBehaviorUpdate[];
   messageId?: number;
   userMessageId?: number;
@@ -95,6 +97,33 @@ export interface ParsedPromiseUpdate {
   reminder: string;
 }
 
+export interface ParsedTavernStateUpdate {
+  action: 'add' | 'update' | 'remove';
+  id?: string;
+  name: string;
+  targetRegion: string;
+  description: string;
+  guestResponseHint: string;
+}
+
+export interface ParsedBusinessAgreementInventoryChange {
+  name: string;
+  category: string;
+  qty: number;
+  tags: string[];
+}
+
+export interface ParsedBusinessAgreementUpdate {
+  action: 'add' | 'update' | 'cancel';
+  id?: string;
+  kind: 'wage' | 'rent' | 'delivery' | 'sideBusiness';
+  name: string;
+  counterparty: string;
+  cashboxDeltaCopper: number;
+  inventoryChanges: ParsedBusinessAgreementInventoryChange[];
+  reminder: string;
+}
+
 export type CharacterBehaviorUpdateAction = 'learn' | 'remove' | 'update';
 
 export interface ParsedCharacterBehaviorUpdate {
@@ -120,6 +149,8 @@ const HIDDEN_STORY_TAGS = [
   'guest_update',
   'regular_guest_update',
   'promise_update',
+  'tavern_state_update',
+  'business_agreement_update',
   'character_behavior_update',
   'UpdateVariable',
   'JSONPatch',
@@ -265,6 +296,8 @@ function parseStoryMessage(messageContent: string, messageId?: number): StoryMes
     guestUpdates: parseGuestUpdates(messageContent),
     regularGuestUpdates: parseRegularGuestUpdates(messageContent),
     promiseUpdates: parsePromiseUpdates(messageContent),
+    tavernStateUpdates: parseTavernStateUpdates(messageContent),
+    businessAgreementUpdates: parseBusinessAgreementUpdates(messageContent),
     characterBehaviorUpdates: parseCharacterBehaviorUpdates(messageContent),
     messageId,
     userMessageId: findPreviousUserMessageId(messageId),
@@ -883,6 +916,105 @@ export function parsePromiseUpdates(messageContent: string): ParsedPromiseUpdate
     return entries
       .map(entry => normalizePromiseUpdate(entry))
       .filter((entry): entry is ParsedPromiseUpdate => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeTavernStateUpdate(value: unknown): ParsedTavernStateUpdate | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const rawAction = readJsonFirstString(record, ['action', '动作', '操作']).toLowerCase();
+  const action = rawAction === 'remove' || rawAction === 'delete' || rawAction === '删除'
+    ? 'remove'
+    : rawAction === 'update' || rawAction === '更新' || rawAction === '修改'
+      ? 'update'
+      : 'add';
+  const id = readJsonFirstString(record, ['id']);
+  const name = readJsonFirstString(record, ['name', '名称', '状态名']);
+  const targetRegion = readJsonFirstString(record, ['target_region', 'targetRegion', 'region', '目标区域', '区域']);
+  const description = readJsonFirstString(record, ['description', '描述', '效果']);
+  const guestResponseHint = readJsonFirstString(record, ['guest_response_hint', 'guestResponseHint', '客人反应', '客人感受']);
+  if (!name && !id) return undefined;
+  if (action !== 'remove' && (!name || !targetRegion || !description)) return undefined;
+  return {
+    action,
+    ...(id ? { id } : {}),
+    name: name || id,
+    targetRegion,
+    description,
+    guestResponseHint,
+  };
+}
+
+export function parseTavernStateUpdates(messageContent: string): ParsedTavernStateUpdate[] {
+  const updateText = extractLastTag(stripThinkingBlocks(messageContent), 'tavern_state_update');
+  if (!updateText) return [];
+  try {
+    const parsed = parseLooseJson(cleanJsonLikeText(updateText));
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.map(normalizeTavernStateUpdate).filter((entry): entry is ParsedTavernStateUpdate => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeAgreementKind(raw: string): ParsedBusinessAgreementUpdate['kind'] {
+  const value = raw.trim().toLowerCase();
+  if (value === 'rent' || value === '房费' || value === '租金') return 'rent';
+  if (value === 'delivery' || value === '送货' || value === '供货') return 'delivery';
+  if (value === 'sidebusiness' || value === 'side_business' || value === '副业') return 'sideBusiness';
+  return 'wage';
+}
+
+function normalizeBusinessAgreementUpdate(value: unknown): ParsedBusinessAgreementUpdate | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const rawAction = readJsonFirstString(record, ['action', '动作', '操作']).toLowerCase();
+  const action = rawAction === 'cancel' || rawAction === 'remove' || rawAction === '取消' || rawAction === '删除'
+    ? 'cancel'
+    : rawAction === 'update' || rawAction === '更新' || rawAction === '修改'
+      ? 'update'
+      : 'add';
+  const id = readJsonFirstString(record, ['id']);
+  const kind = normalizeAgreementKind(readJsonFirstString(record, ['kind', 'type', '类型', '约定类型']));
+  const name = readJsonFirstString(record, ['name', '名称', '标题']);
+  const counterparty = readJsonFirstString(record, ['counterparty', 'person', '对象', '对方', '人物']);
+  const cashboxDeltaCopper = Math.trunc(Number(record.cashbox_delta_copper ?? record.cashboxDeltaCopper ?? record['钱匣变化铜币'] ?? record['金额铜币'] ?? 0) || 0);
+  const rawChanges = record.inventory_changes ?? record.inventoryChanges ?? record['库存变化'];
+  const inventoryChanges = (Array.isArray(rawChanges) ? rawChanges : [])
+    .map(raw => {
+      if (!raw || typeof raw !== 'object') return undefined;
+      const item = raw as Record<string, unknown>;
+      const itemName = readJsonFirstString(item, ['name', '名称', '物品']);
+      const category = readJsonFirstString(item, ['category', '分类']) || '杂物';
+      const qty = Math.trunc(Number(item.qty ?? item['数量'] ?? 0) || 0);
+      const tags = readJsonTags(item.tags ?? item['标签']).filter(Boolean);
+      return itemName && qty !== 0 ? { name: itemName, category, qty, tags } : undefined;
+    })
+    .filter((entry): entry is ParsedBusinessAgreementInventoryChange => Boolean(entry));
+  const reminder = readJsonFirstString(record, ['reminder', '提醒', '说明', '内容']);
+  if (!name && !id) return undefined;
+  if (action !== 'cancel' && (!name || !counterparty || (!cashboxDeltaCopper && !inventoryChanges.length))) return undefined;
+  return {
+    action,
+    ...(id ? { id } : {}),
+    kind,
+    name: name || id,
+    counterparty,
+    cashboxDeltaCopper,
+    inventoryChanges,
+    reminder: reminder || name || id,
+  };
+}
+
+export function parseBusinessAgreementUpdates(messageContent: string): ParsedBusinessAgreementUpdate[] {
+  const updateText = extractLastTag(stripThinkingBlocks(messageContent), 'business_agreement_update');
+  if (!updateText) return [];
+  try {
+    const parsed = parseLooseJson(cleanJsonLikeText(updateText));
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.map(normalizeBusinessAgreementUpdate).filter((entry): entry is ParsedBusinessAgreementUpdate => Boolean(entry));
   } catch {
     return [];
   }
