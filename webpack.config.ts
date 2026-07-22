@@ -135,7 +135,10 @@ const bundle = () => {
 };
 const bundle_debounced = _.debounce(bundle, 500, { leading: true, trailing: false });
 function tavern_sync(compiler: webpack.Compiler) {
+<<<<<<< HEAD
   if (process.env.SKIP_TAVERN_SYNC === '1') return;
+=======
+>>>>>>> f24091c9a91d583dafdb4867d858268ebc487545
   if (!compiler.options.watch) {
     bundle_debounced();
     return;
@@ -525,11 +528,14 @@ function parse_configuration(entry: Entry): (_env: any, argv: any) => webpack.Co
         return callback();
       }
 
+<<<<<<< HEAD
       const should_bundle_runtime = entry.script.includes(`src${path.sep}普利莫迪亚${path.sep}`);
       if (should_bundle_runtime && ['vue', 'pinia', 'yaml'].includes(request)) {
         return callback();
       }
 
+=======
+>>>>>>> f24091c9a91d583dafdb4867d858268ebc487545
       if (
         request.startsWith('-') ||
         request.startsWith('.') ||
@@ -567,9 +573,23 @@ function parse_configuration(entry: Entry): (_env: any, argv: any) => webpack.Co
       const cdn = {
         sass: 'https://jspm.dev/sass',
       };
+<<<<<<< HEAD
       return callback(
         null,
         'module-import ' + (cdn[request as keyof typeof cdn] ?? `https://testingcf.jsdelivr.net/npm/${request}/+esm`),
+=======
+      const package_json = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'package.json'), 'utf-8')) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      const package_versions = { ...package_json.devDependencies, ...package_json.dependencies };
+      const version = package_versions[request]?.replace(/^[~^]/, '');
+      const versioned_request = /^[.\d]+$/.test(version) ? `${request}@${version}` : request;
+      return callback(
+        null,
+        'module-import ' +
+          (cdn[request as keyof typeof cdn] ?? `https://testingcf.jsdelivr.net/npm/${versioned_request}/+esm`),
+>>>>>>> f24091c9a91d583dafdb4867d858268ebc487545
       );
     },
   });
